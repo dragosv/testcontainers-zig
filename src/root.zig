@@ -1,7 +1,7 @@
 /// testcontainers-zig
 ///
 /// A Zig port of https://github.com/testcontainers/testcontainers-go.
-/// Uses https://github.com/dragosv/dusty (branch: unix_socket) as the
+/// Uses https://github.com/dragosv/dusty (main branch) as the
 /// HTTP library for communicating with the Docker Engine over its Unix socket.
 ///
 /// Quick start:

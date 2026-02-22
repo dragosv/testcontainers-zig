@@ -5,8 +5,8 @@
     .fingerprint = 0x5ead92dc45f2b31e,
     .dependencies = .{
         .dusty = .{
-            .url = "git+https://github.com/dragosv/dusty?ref=unix_socket#8aaedf71a069758bd88437d117ccd89069dc9bf8",
-            .hash = "dusty-0.0.0-Qdw7Rqh_CQDJNptlxOVIRgT4DxHnAKT9KohxfNhSH9bC",
+            .url = "git+https://github.com/dragosv/dusty?ref=main#69f47e2b8abde41826437e0528e8df350c9c02c0",
+            .hash = "dusty-0.0.0-Qdw7RpiSCQBIw2CGtTHvh1DMFOILQTpI9qm_qIkDpY8E",
         },
     },
     .paths = .{

@@ -1,11 +1,14 @@
-/// DockerClient — thin wrapper around the DockerHttp Unix-socket HTTP client
-/// that speaks the Docker Engine REST API.
+/// DockerClient — thin wrapper around dusty's HTTP client using Unix sockets
+/// to communicate with the Docker Engine REST API.
 ///
 /// All responses are allocated with the caller-supplied allocator; the caller
 /// is responsible for freeing them unless documented otherwise.
+///
+/// IMPORTANT: A `zio.Runtime` must be initialised on the calling thread before
+/// creating a DockerClient or calling any of its methods, because dusty's
+/// networking is driven by the zio event loop.
 const std = @import("std");
-const http_mod = @import("http.zig");
-const DockerHttp = http_mod.DockerHttp;
+const dusty = @import("dusty");
 const types = @import("types.zig");
 const container_mod = @import("container.zig");
 
@@ -14,9 +17,6 @@ pub const docker_socket = "/var/run/docker.sock";
 
 /// Docker Engine API version used for all requests.
 pub const api_version = "v1.46";
-
-/// Pseudo-host used in the HTTP request line (Docker ignores it).
-pub const api_host = "http://localhost";
 
 pub const DockerClientError = error{
     ApiError,
@@ -30,66 +30,78 @@ pub const DockerClientError = error{
 pub const DockerClient = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
+    client: dusty.Client,
 
     pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) DockerClient {
         return .{
             .allocator = allocator,
             .socket_path = socket_path,
+            .client = dusty.Client.init(allocator, .{
+                // Allow large response bodies (e.g. logs, inspect output)
+                .max_response_size = 64 * 1024 * 1024,
+            }),
         };
     }
 
     pub fn deinit(self: *DockerClient) void {
-        _ = self; // nothing to release
+        self.client.deinit();
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
+    /// Build the full URL for a Docker API path.
+    fn apiUrl(self: *DockerClient, path: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(self.allocator, "http://localhost{s}", .{path});
+    }
+
     /// Perform a request and check that the status code is acceptable.
     /// Returns the raw body bytes (caller owns the memory).
     fn doRequest(
         self: *DockerClient,
-        method: []const u8,
+        method: dusty.Method,
         path: []const u8,
         body: ?[]const u8,
         content_type: ?[]const u8,
         expected_codes: []const u16,
     ) ![]const u8 {
-        var dh = DockerHttp.init(self.allocator, self.socket_path);
-        var resp = try dh.request(method, path, content_type, body);
+        const url = try self.apiUrl(path);
+        defer self.allocator.free(url);
+
+        var headers: dusty.Headers = .{};
+        defer headers.deinit(self.allocator);
+        if (content_type) |ct| {
+            try headers.put(self.allocator, "Content-Type", ct);
+        }
+
+        var resp = try self.client.fetch(url, .{
+            .method = method,
+            .body = body,
+            .unix_socket_path = self.socket_path,
+            .headers = if (content_type != null) &headers else null,
+        });
         defer resp.deinit();
 
-        const status_code = resp.status;
+        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
 
         var acceptable = false;
         for (expected_codes) |c| {
-            if (c == status_code) {
+            if (c == sc) {
                 acceptable = true;
                 break;
             }
         }
 
         if (!acceptable) {
-            if (status_code == 404) return DockerClientError.NotFound;
-            if (status_code == 409) return DockerClientError.Conflict;
-            if (status_code >= 500) return DockerClientError.ServerError;
+            if (sc == 404) return DockerClientError.NotFound;
+            if (sc == 409) return DockerClientError.Conflict;
+            if (sc >= 500) return DockerClientError.ServerError;
             return DockerClientError.ApiError;
         }
 
-        return self.allocator.dupe(u8, resp.body);
-    }
-
-    /// Like doRequest but returns a live StreamingResponse for streaming.
-    /// The caller must call resp.close() when done.
-    fn doStream(
-        self: *DockerClient,
-        method: []const u8,
-        path: []const u8,
-        body: ?[]const u8,
-    ) !http_mod.StreamingResponse {
-        var dh = DockerHttp.init(self.allocator, self.socket_path);
-        return dh.requestStream(method, path, body);
+        const resp_body = try resp.body() orelse "";
+        return self.allocator.dupe(u8, resp_body);
     }
 
     // -----------------------------------------------------------------------
@@ -124,17 +136,27 @@ pub const DockerClient = struct {
         );
         defer self.allocator.free(api_path);
 
-        // The response is a stream of JSON progress objects; we consume it
-        // fully to wait for the pull to finish.
-        var resp = try self.doStream("POST", api_path, null);
-        defer resp.close();
+        const url = try self.apiUrl(api_path);
+        defer self.allocator.free(url);
 
-        if (resp.status != 200) return DockerClientError.ApiError;
+        // imagePull returns a streaming JSON progress response.
+        // We use a streaming reader to drain it without buffering the whole body,
+        // which avoids hitting max_response_size for large image pulls.
+        var resp = try self.client.fetch(url, .{
+            .method = .post,
+            .unix_socket_path = self.socket_path,
+            .decompress = false,
+        });
+        defer resp.deinit();
 
-        // Drain the stream (each chunk is a JSON object on one line)
+        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
+        if (sc != 200) return DockerClientError.ApiError;
+
+        // Drain the progress stream to wait for completion.
+        const r = resp.reader();
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = resp.read(&buf) catch break;
+            const n = r.readSliceShort(&buf) catch break;
             if (n == 0) break;
         }
     }
@@ -147,7 +169,7 @@ pub const DockerClient = struct {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/images/{s}/json", .{ api_version, encoded });
         defer self.allocator.free(api_path);
 
-        _ = self.doRequest("GET", api_path, null, null, &.{200}) catch |err| {
+        _ = self.doRequest(.get, api_path, null, null, &.{200}) catch |err| {
             if (err == DockerClientError.NotFound) return false;
             return err;
         };
@@ -175,7 +197,7 @@ pub const DockerClient = struct {
             try std.fmt.bufPrint(&path_buf, "/{s}/containers/create", .{api_version});
         defer if (name != null) self.allocator.free(api_path);
 
-        const resp_body = try self.doRequest("POST", api_path, body_json, "application/json", &.{201});
+        const resp_body = try self.doRequest(.post, api_path, body_json, "application/json", &.{201});
         defer self.allocator.free(resp_body);
 
         var parsed = try std.json.parseFromSlice(
@@ -193,7 +215,7 @@ pub const DockerClient = struct {
     pub fn containerStart(self: *DockerClient, id: []const u8) !void {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/containers/{s}/start", .{ api_version, id });
         defer self.allocator.free(api_path);
-        const body = try self.doRequest("POST", api_path, null, null, &.{ 204, 304 });
+        const body = try self.doRequest(.post, api_path, null, null, &.{ 204, 304 });
         self.allocator.free(body);
     }
 
@@ -206,7 +228,7 @@ pub const DockerClient = struct {
         );
         defer self.allocator.free(api_path);
 
-        const body = self.doRequest("POST", api_path, null, null, &.{ 204, 304 }) catch |err| {
+        const body = self.doRequest(.post, api_path, null, null, &.{ 204, 304 }) catch |err| {
             if (err == DockerClientError.NotFound) return; // already gone
             return err;
         };
@@ -232,7 +254,7 @@ pub const DockerClient = struct {
         );
         defer self.allocator.free(api_path);
 
-        const body = self.doRequest("DELETE", api_path, null, null, &.{204}) catch |err| {
+        const body = self.doRequest(.delete, api_path, null, null, &.{204}) catch |err| {
             if (err == DockerClientError.NotFound) return;
             return err;
         };
@@ -243,7 +265,7 @@ pub const DockerClient = struct {
     pub fn containerInspectRaw(self: *DockerClient, id: []const u8) ![]const u8 {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/containers/{s}/json", .{ api_version, id });
         defer self.allocator.free(api_path);
-        return self.doRequest("GET", api_path, null, null, &.{200});
+        return self.doRequest(.get, api_path, null, null, &.{200});
     }
 
     /// Returns the parsed inspect structure. The caller must call `.deinit()`
@@ -271,21 +293,7 @@ pub const DockerClient = struct {
             .{ api_version, id },
         );
         defer self.allocator.free(api_path);
-
-        var resp = try self.doStream("GET", api_path, null);
-        defer resp.close();
-
-        var buf: std.ArrayList(u8) = .empty;
-        errdefer buf.deinit(self.allocator);
-
-        var tmp: [4096]u8 = undefined;
-        while (true) {
-            const n = resp.read(&tmp) catch break;
-            if (n == 0) break;
-            try buf.appendSlice(self.allocator, tmp[0..n]);
-        }
-
-        return buf.toOwnedSlice(self.allocator);
+        return self.doRequest(.get, api_path, null, null, &.{200});
     }
 
     /// Decode Docker multiplexed log stream into plain text.
@@ -336,7 +344,7 @@ pub const DockerClient = struct {
         const create_api_path = try std.fmt.allocPrint(self.allocator, "/{s}/containers/{s}/exec", .{ api_version, id });
         defer self.allocator.free(create_api_path);
 
-        const create_resp = try self.doRequest("POST", create_api_path, create_body, "application/json", &.{201});
+        const create_resp = try self.doRequest(.post, create_api_path, create_body, "application/json", &.{201});
         defer self.allocator.free(create_resp);
 
         var parsed_exec = try std.json.parseFromSlice(
@@ -357,28 +365,16 @@ pub const DockerClient = struct {
         const start_api_path = try std.fmt.allocPrint(self.allocator, "/{s}/exec/{s}/start", .{ api_version, exec_id });
         defer self.allocator.free(start_api_path);
 
-        var start_resp = try self.doStream("POST", start_api_path, start_body);
-        defer start_resp.close();
-
-        var output_buf: std.ArrayList(u8) = .empty;
-        errdefer output_buf.deinit(self.allocator);
-
-        var tmp: [4096]u8 = undefined;
-        while (true) {
-            const n = start_resp.read(&tmp) catch break;
-            if (n == 0) break;
-            try output_buf.appendSlice(self.allocator, tmp[0..n]);
-        }
-
-        const raw_output = try output_buf.toOwnedSlice(self.allocator);
+        const raw_output = try self.doRequest(.post, start_api_path, start_body, "application/json", &.{200});
         defer self.allocator.free(raw_output);
+
         const output = try decodeLogs(self.allocator, raw_output);
 
         // 3. Inspect exec to get exit code
         const inspect_api_path = try std.fmt.allocPrint(self.allocator, "/{s}/exec/{s}/json", .{ api_version, exec_id });
         defer self.allocator.free(inspect_api_path);
 
-        const inspect_body = try self.doRequest("GET", inspect_api_path, null, null, &.{200});
+        const inspect_body = try self.doRequest(.get, inspect_api_path, null, null, &.{200});
         defer self.allocator.free(inspect_body);
 
         var parsed_inspect = try std.json.parseFromSlice(
@@ -412,7 +408,7 @@ pub const DockerClient = struct {
         var api_path_buf: [64]u8 = undefined;
         const api_path = try std.fmt.bufPrint(&api_path_buf, "/{s}/networks/create", .{api_version});
 
-        const resp_body = try self.doRequest("POST", api_path, body, "application/json", &.{201});
+        const resp_body = try self.doRequest(.post, api_path, body, "application/json", &.{201});
         defer self.allocator.free(resp_body);
 
         var parsed = try std.json.parseFromSlice(
@@ -431,7 +427,7 @@ pub const DockerClient = struct {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/networks/{s}", .{ api_version, id });
         defer self.allocator.free(api_path);
 
-        const body = self.doRequest("DELETE", api_path, null, null, &.{204}) catch |err| {
+        const body = self.doRequest(.delete, api_path, null, null, &.{204}) catch |err| {
             if (err == DockerClientError.NotFound) return;
             return err;
         };
@@ -451,7 +447,7 @@ pub const DockerClient = struct {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/networks/{s}/connect", .{ api_version, network_id });
         defer self.allocator.free(api_path);
 
-        const resp = try self.doRequest("POST", api_path, body, "application/json", &.{200});
+        const resp = try self.doRequest(.post, api_path, body, "application/json", &.{200});
         self.allocator.free(resp);
     }
 
@@ -471,7 +467,7 @@ pub const DockerClient = struct {
             .{ api_version, id, encoded },
         );
         defer self.allocator.free(api_path);
-        const body = try self.doRequest("PUT", api_path, tar_data, "application/x-tar", &.{200});
+        const body = try self.doRequest(.put, api_path, tar_data, "application/x-tar", &.{200});
         self.allocator.free(body);
     }
 
@@ -481,10 +477,18 @@ pub const DockerClient = struct {
 
     /// Ping the Docker daemon. Returns true on success.
     pub fn ping(self: *DockerClient) !bool {
-        var dh = DockerHttp.init(self.allocator, self.socket_path);
-        var resp = dh.request("GET", "/" ++ api_version ++ "/_ping", null, null) catch return false;
+        const api_path = "/" ++ api_version ++ "/_ping";
+        const url = try self.apiUrl(api_path);
+        defer self.allocator.free(url);
+
+        var resp = self.client.fetch(url, .{
+            .method = .get,
+            .unix_socket_path = self.socket_path,
+        }) catch return false;
         defer resp.deinit();
-        return resp.status == 200;
+
+        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
+        return sc == 200;
     }
 };
 
