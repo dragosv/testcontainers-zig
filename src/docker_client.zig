@@ -169,10 +169,11 @@ pub const DockerClient = struct {
         const api_path = try std.fmt.allocPrint(self.allocator, "/{s}/images/{s}/json", .{ api_version, encoded });
         defer self.allocator.free(api_path);
 
-        _ = self.doRequest(.get, api_path, null, null, &.{200}) catch |err| {
+        const body = self.doRequest(.get, api_path, null, null, &.{200}) catch |err| {
             if (err == DockerClientError.NotFound) return false;
             return err;
         };
+        self.allocator.free(body);
         return true;
     }
 
@@ -276,11 +277,13 @@ pub const DockerClient = struct {
     ) !std.json.Parsed(types.ContainerInspect) {
         const raw = try self.containerInspectRaw(id);
         defer self.allocator.free(raw);
+        // Use alloc_always to force all strings to be copied into the arena
+        // rather than storing zero-copy slices into the temporary `raw` buffer.
         return std.json.parseFromSlice(
             types.ContainerInspect,
             self.allocator,
             raw,
-            .{ .ignore_unknown_fields = true },
+            .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         );
     }
 
@@ -469,6 +472,69 @@ pub const DockerClient = struct {
         defer self.allocator.free(api_path);
         const body = try self.doRequest(.put, api_path, tar_data, "application/x-tar", &.{200});
         self.allocator.free(body);
+    }
+
+    // -----------------------------------------------------------------------
+    // Container discovery
+    // -----------------------------------------------------------------------
+
+    /// Look up a container by exact name. Returns the container ID if found,
+    /// or null if no container with that name exists.
+    /// Caller owns the returned string.
+    pub fn containerGetByName(self: *DockerClient, name: []const u8) !?[]const u8 {
+        // Fetch all containers (running + stopped) and search by name locally.
+        // This avoids URL-encoding issues with the Docker filter API.
+        var api_path_buf: [128]u8 = undefined;
+        const api_path = try std.fmt.bufPrint(
+            &api_path_buf,
+            "/{s}/containers/json?all=true",
+            .{api_version},
+        );
+
+        const resp_body = try self.doRequest(.get, api_path, null, null, &.{200});
+        defer self.allocator.free(resp_body);
+
+        std.debug.print("[containerGetByName] searching for name='{s}', response len={}\n", .{ name, resp_body.len });
+
+        var parsed = try std.json.parseFromSlice(
+            std.json.Value,
+            self.allocator,
+            resp_body,
+            .{ .allocate = .alloc_always },
+        );
+        defer parsed.deinit();
+
+        if (parsed.value != .array) {
+            std.debug.print("[containerGetByName] parsed.value is not array: {}\n", .{parsed.value});
+            return null;
+        }
+
+        std.debug.print("[containerGetByName] container count={}\n", .{parsed.value.array.items.len});
+
+        for (parsed.value.array.items) |item| {
+            if (item != .object) continue;
+            const names_v = item.object.get("Names") orelse continue;
+            if (names_v != .array) continue;
+            for (names_v.array.items) |name_v| {
+                if (name_v != .string) continue;
+                const full = name_v.string;
+                // Docker names are prefixed with "/": "/containerName"
+                const candidate = if (std.mem.startsWith(u8, full, "/"))
+                    full[1..]
+                else
+                    full;
+                std.debug.print("[containerGetByName] checking '{s}' vs '{s}'\n", .{ candidate, name });
+                if (std.mem.eql(u8, candidate, name)) {
+                    const id_v = item.object.get("Id") orelse continue;
+                    if (id_v != .string) continue;
+                    const id = try self.allocator.dupe(u8, id_v.string);
+                    std.debug.print("[containerGetByName] FOUND id={s}\n", .{id});
+                    return id;
+                }
+            }
+        }
+        std.debug.print("[containerGetByName] NOT FOUND\n", .{});
+        return null;
     }
 
     // -----------------------------------------------------------------------

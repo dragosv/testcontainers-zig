@@ -132,3 +132,47 @@ pub fn normalizePort(allocator: std.mem.Allocator, port: []const u8) ![]const u8
     if (std.mem.indexOfScalar(u8, port, '/') != null) return port;
     return std.fmt.allocPrint(allocator, "{s}/tcp", .{port});
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+test "normalizePort: adds /tcp suffix when missing" {
+    const result = try normalizePort(std.testing.allocator, "80");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("80/tcp", result);
+}
+
+test "normalizePort: keeps /tcp suffix unchanged" {
+    // No allocation: input already has '/', original slice returned
+    const result = try normalizePort(std.testing.allocator, "80/tcp");
+    try std.testing.expectEqualStrings("80/tcp", result);
+}
+
+test "normalizePort: keeps /udp suffix unchanged" {
+    const result = try normalizePort(std.testing.allocator, "53/udp");
+    try std.testing.expectEqualStrings("53/udp", result);
+}
+
+test "normalizePort: numeric port without suffix gets /tcp" {
+    const result = try normalizePort(std.testing.allocator, "5432");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqualStrings("5432/tcp", result);
+}
+
+test "ContainerRequest: defaults are sensible" {
+    const req = ContainerRequest{ .image = "alpine:3" };
+    try std.testing.expectEqualStrings("alpine:3", req.image);
+    try std.testing.expectEqual(@as(usize, 0), req.exposed_ports.len);
+    try std.testing.expectEqual(@as(usize, 0), req.cmd.len);
+    try std.testing.expect(req.name == null);
+    try std.testing.expect(req.wait_strategy == .none);
+}
+
+test "GenericContainerRequest: reuse defaults to false" {
+    const greq = GenericContainerRequest{
+        .container_request = ContainerRequest{ .image = "alpine:3" },
+    };
+    try std.testing.expect(!greq.reuse);
+    try std.testing.expect(greq.started);
+}

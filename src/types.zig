@@ -77,6 +77,8 @@ pub const ContainerInspect = struct {
 pub const ContainerConfig = struct {
     Image: []const u8 = "",
     Hostname: []const u8 = "",
+    /// Labels as a JSON object.  Keys/values are owned by the parsed arena.
+    Labels: ?std.json.Value = null,
 };
 
 pub const NetworkSettings = struct {

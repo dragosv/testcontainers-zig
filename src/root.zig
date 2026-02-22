@@ -141,11 +141,58 @@ pub const DockerProvider = struct {
     }
 
     /// Create and optionally start a container.
+    /// NOTE: If the wait strategy fails, the container has already been created
+    /// in Docker but the error propagates to the caller. Use `createContainer`
+    /// + `start()` separately if you need the container reference on failure.
     pub fn runContainer(
         self: *DockerProvider,
         req: *const ContainerRequest,
     ) !*DockerContainer {
         const ctr = try self.createContainer(req);
+        errdefer { ctr.terminate() catch {}; ctr.deinit(); }
+        try ctr.start();
+        return ctr;
+    }
+
+    /// Create and start a container with reuse / lifecycle control.
+    ///
+    /// When `greq.reuse` is true and a container with the same name already
+    /// exists, the existing container is returned (already started).
+    /// When `greq.reuse` is false and a container with that name exists, the
+    /// Docker daemon returns a 409 Conflict error.
+    ///
+    /// When `greq.started` is false, the container is created but not started.
+    pub fn runGenericContainer(
+        self: *DockerProvider,
+        greq: *const GenericContainerRequest,
+    ) !*DockerContainer {
+        const req = &greq.container_request;
+
+        // Reuse: find existing container by name
+        if (greq.reuse) {
+            const name = req.name orelse return error.ContainerNameRequired;
+            std.debug.print("[reuse] searching for container '{s}'\n", .{name});
+            if (try self.client.containerGetByName(name)) |existing_id| {
+                defer self.allocator.free(existing_id);
+                std.debug.print("[reuse] found container ID={s}\n", .{existing_id});
+                const ctr = try self.allocator.create(DockerContainer);
+                ctr.* = .{
+                    .id = try self.allocator.dupe(u8, existing_id),
+                    .image = try self.allocator.dupe(u8, req.image),
+                    .is_running = true,
+                    .allocator = self.allocator,
+                    .client = &self.client,
+                    .wait_strategy = req.wait_strategy,
+                };
+                // start() accepts 304 (already running) and re-runs wait strategy
+                try ctr.start();
+                return ctr;
+            }
+        }
+
+        const ctr = try self.createContainer(req);
+        if (!greq.started) return ctr;
+        errdefer { ctr.terminate() catch {}; ctr.deinit(); }
         try ctr.start();
         return ctr;
     }

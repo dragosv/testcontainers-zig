@@ -38,6 +38,22 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&run_lib_tests.step);
 
+    // Integration tests (require a running Docker daemon)
+    const integration_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/integration_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    integration_tests.root_module.addImport("dusty", dusty_dep.module("dusty"));
+    integration_tests.root_module.addImport("zio", zio_dep.module("zio"));
+    integration_tests.root_module.addImport("testcontainers", mod);
+
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    const integration_test_step = b.step("integration-test", "Run Docker integration tests");
+    integration_test_step.dependOn(&run_integration_tests.step);
+
     // Basic example executable
     const example = b.addExecutable(.{
         .name = "example",

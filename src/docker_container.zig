@@ -118,6 +118,92 @@ pub const DockerContainer = struct {
         return allocator.dupe(u8, parsed.value.NetworkSettings.IPAddress);
     }
 
+    /// Return the names of networks the container is attached to.
+    /// Caller owns the returned slice and each element string.
+    /// Free with: `for (nets) |n| allocator.free(n); allocator.free(nets);`
+    pub fn networks(self: *DockerContainer, allocator: std.mem.Allocator) ![][]const u8 {
+        var parsed = try self.client.containerInspect(self.id);
+        defer parsed.deinit();
+
+        const nets_val = parsed.value.NetworkSettings.Networks orelse {
+            const result = try allocator.alloc([]const u8, 0);
+            return result;
+        };
+        if (nets_val != .object) {
+            const result = try allocator.alloc([]const u8, 0);
+            return result;
+        }
+
+        var list: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (list.items) |item| allocator.free(item);
+            list.deinit(allocator);
+        }
+        var it = nets_val.object.iterator();
+        while (it.next()) |entry| {
+            try list.append(allocator, try allocator.dupe(u8, entry.key_ptr.*));
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    /// Return aliases for a specific network this container is attached to.
+    /// Returns an empty slice if the network has no aliases or the container
+    /// is not on the network.
+    /// Caller owns the returned slice and each element string.
+    /// Free with: `for (aliases) |a| allocator.free(a); allocator.free(aliases);`
+    pub fn networkAliases(
+        self: *DockerContainer,
+        network_name: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![][]const u8 {
+        var parsed = try self.client.containerInspect(self.id);
+        defer parsed.deinit();
+
+        const nets_val = parsed.value.NetworkSettings.Networks orelse
+            return allocator.alloc([]const u8, 0);
+        if (nets_val != .object) return allocator.alloc([]const u8, 0);
+
+        const ep = nets_val.object.get(network_name) orelse
+            return allocator.alloc([]const u8, 0);
+        if (ep != .object) return allocator.alloc([]const u8, 0);
+
+        const aliases_v = ep.object.get("Aliases") orelse
+            return allocator.alloc([]const u8, 0);
+        if (aliases_v != .array) return allocator.alloc([]const u8, 0);
+
+        var list: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (list.items) |item| allocator.free(item);
+            list.deinit(allocator);
+        }
+        for (aliases_v.array.items) |a| {
+            if (a == .string) try list.append(allocator, try allocator.dupe(u8, a.string));
+        }
+        return list.toOwnedSlice(allocator);
+    }
+
+    /// Return the container IP address on the named network.
+    pub fn networkIP(
+        self: *DockerContainer,
+        network_name: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![]const u8 {
+        var parsed = try self.client.containerInspect(self.id);
+        defer parsed.deinit();
+
+        const nets_val = parsed.value.NetworkSettings.Networks orelse
+            return error.NoNetwork;
+        if (nets_val != .object) return error.NoNetwork;
+
+        const ep = nets_val.object.get(network_name) orelse return error.NoNetwork;
+        if (ep != .object) return error.NoNetwork;
+
+        const ip_v = ep.object.get("IPAddress") orelse return error.NoNetwork;
+        if (ip_v != .string) return error.NoNetwork;
+
+        return allocator.dupe(u8, ip_v.string);
+    }
+
     /// Return a host:port endpoint string for a container port.
     /// proto is prepended when non-empty (e.g. "http").
     pub fn endpoint(
@@ -145,8 +231,9 @@ pub const DockerContainer = struct {
     /// Return the current state status string (e.g. "running", "exited").
     pub fn stateStatus(self: *DockerContainer, allocator: std.mem.Allocator) ![]const u8 {
         var parsed = try self.client.containerInspect(self.id);
-        defer parsed.deinit();
-        return allocator.dupe(u8, parsed.value.State.Status);
+        const result = try allocator.dupe(u8, parsed.value.State.Status);
+        parsed.deinit();
+        return result;
     }
 
     /// Return true if the container is currently running.

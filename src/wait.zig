@@ -307,3 +307,99 @@ fn waitExec(s: ExecStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
 
     return error.WaitStrategyTimeout;
 }
+
+// ---------------------------------------------------------------------------
+// Tests — constructors and defaults
+// ---------------------------------------------------------------------------
+
+test "forLog: creates LogStrategy with correct fields" {
+    const s = forLog("ready to accept connections");
+    try std.testing.expect(s == .log);
+    try std.testing.expectEqualStrings("ready to accept connections", s.log.log);
+    try std.testing.expectEqual(@as(u32, 1), s.log.occurrence);
+    try std.testing.expect(!s.log.is_regexp);
+}
+
+test "forHttp: creates HttpStrategy with correct path" {
+    const s = forHttp("/healthz");
+    try std.testing.expect(s == .http);
+    try std.testing.expectEqualStrings("/healthz", s.http.path);
+    try std.testing.expectEqualStrings("GET", s.http.method);
+    try std.testing.expectEqual(@as(u16, 200), s.http.status_code);
+    try std.testing.expect(!s.http.use_tls);
+}
+
+test "forPort: creates PortStrategy with correct port" {
+    const s = forPort("5432/tcp");
+    try std.testing.expect(s == .port);
+    try std.testing.expectEqualStrings("5432/tcp", s.port.port);
+}
+
+test "forHealthCheck: creates HealthCheckStrategy" {
+    const s = forHealthCheck();
+    try std.testing.expect(s == .health_check);
+}
+
+test "forExec: creates ExecStrategy with command" {
+    const cmd = [_][]const u8{ "pg_isready", "-U", "postgres" };
+    const s = forExec(&cmd);
+    try std.testing.expect(s == .exec);
+    try std.testing.expectEqual(@as(usize, 3), s.exec.cmd.len);
+    try std.testing.expectEqualStrings("pg_isready", s.exec.cmd[0]);
+    try std.testing.expectEqual(@as(i64, 0), s.exec.expected_exit_code);
+}
+
+test "forAll: wraps multiple strategies" {
+    const inner = [_]Strategy{ forLog("ready"), forPort("80/tcp") };
+    const s = forAll(&inner);
+    try std.testing.expect(s == .all);
+    try std.testing.expectEqual(@as(usize, 2), s.all.len);
+}
+
+test "none strategy: waitUntilReady is a no-op" {
+    // Construct a dummy target that panics if any vtable function is called
+    const dummy_vtable = StrategyTarget.VTable{
+        .daemonHost = struct {
+            fn f(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
+                return error.ShouldNotBeCalled;
+            }
+        }.f,
+        .mappedPort = struct {
+            fn f(_: *anyopaque, _: []const u8, _: std.mem.Allocator) anyerror!u16 {
+                return error.ShouldNotBeCalled;
+            }
+        }.f,
+        .logs = struct {
+            fn f(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
+                return error.ShouldNotBeCalled;
+            }
+        }.f,
+        .exec = struct {
+            fn f(_: *anyopaque, _: []const []const u8, _: std.mem.Allocator) anyerror!ExecResult {
+                return error.ShouldNotBeCalled;
+            }
+        }.f,
+        .healthStatus = struct {
+            fn f(_: *anyopaque, _: std.mem.Allocator) anyerror![]const u8 {
+                return error.ShouldNotBeCalled;
+            }
+        }.f,
+    };
+    var dummy_obj: u8 = 0;
+    const target = StrategyTarget{ .ptr = &dummy_obj, .vtable = &dummy_vtable };
+    const s: Strategy = .none;
+    try s.waitUntilReady(target, std.testing.allocator);
+}
+
+test "timeoutNs: returns default when zero" {
+    try std.testing.expectEqual(default_startup_timeout_ns, timeoutNs(0));
+}
+
+test "timeoutNs: returns supplied value when non-zero" {
+    try std.testing.expectEqual(@as(u64, 5_000_000_000), timeoutNs(5_000_000_000));
+}
+
+test "pollNs: returns default when zero" {
+    try std.testing.expectEqual(default_poll_interval_ns, pollNs(0));
+}
+
