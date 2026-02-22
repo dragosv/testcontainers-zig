@@ -1,0 +1,17 @@
+.{
+    .name = .testcontainers,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0x5ead92dc45f2b31e,
+    .dependencies = .{
+        .dusty = .{
+            .url = "git+https://github.com/dragosv/dusty?ref=unix_socket#8aaedf71a069758bd88437d117ccd89069dc9bf8",
+            .hash = "dusty-0.0.0-Qdw7Rqh_CQDJNptlxOVIRgT4DxHnAKT9KohxfNhSH9bC",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
