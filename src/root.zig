@@ -39,6 +39,36 @@ const std = @import("std");
 
 pub const wait = @import("wait.zig");
 pub const network = @import("network.zig");
+
+// ---------------------------------------------------------------------------
+// Pre-built modules (top-10 Docker Hub downloads)
+// ---------------------------------------------------------------------------
+
+/// Ready-to-use typed containers for the most popular Docker images.
+///
+/// Each module exposes:
+///   - `default_image`  — the recommended image tag
+///   - `Options`        — configuration struct with sensible defaults
+///   - `run(provider, image, opts)` — start and return a typed container
+///   - `runDefault(provider)`       — shorthand with default image + options
+///
+/// Example:
+///   const pg = try tc.modules.postgres.runDefault(&provider);
+///   defer pg.terminate() catch {};
+///   defer pg.deinit();
+///   const url = try pg.connectionString(alloc);
+pub const modules = struct {
+    pub const postgres      = @import("modules/postgres.zig");
+    pub const mysql         = @import("modules/mysql.zig");
+    pub const redis         = @import("modules/redis.zig");
+    pub const mongodb       = @import("modules/mongodb.zig");
+    pub const rabbitmq      = @import("modules/rabbitmq.zig");
+    pub const mariadb       = @import("modules/mariadb.zig");
+    pub const minio         = @import("modules/minio.zig");
+    pub const elasticsearch = @import("modules/elasticsearch.zig");
+    pub const kafka         = @import("modules/kafka.zig");
+    pub const localstack    = @import("modules/localstack.zig");
+};
 pub const ContainerRequest = @import("container.zig").ContainerRequest;
 pub const GenericContainerRequest = @import("container.zig").GenericContainerRequest;
 pub const TerminateOptions = @import("container.zig").TerminateOptions;
