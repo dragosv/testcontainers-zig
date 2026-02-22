@@ -30,4 +30,7 @@ jobs:
         run: zig build
 
       - name: Run tests
+        run: zig build test --summary all
+        
+      - name: Run integration tests
         run: zig build integration-test --summary all
