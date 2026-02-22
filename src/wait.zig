@@ -214,10 +214,12 @@ fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
     const url = try std.fmt.allocPrint(alloc, "{s}://{s}:{d}{s}", .{ scheme, host, mapped_port, s.path });
     defer alloc.free(url);
 
-    var client = dusty.Client.init(alloc, .{});
-    defer client.deinit();
-
     while (std.time.nanoTimestamp() < deadline) {
+        // Create a fresh client per attempt to avoid connection pool corruption
+        // when the server is not yet ready and resets connections.
+        var client = dusty.Client.init(alloc, .{ .max_idle_connections = 0 });
+        defer client.deinit();
+
         var resp = client.fetch(url, .{
             .method = if (std.mem.eql(u8, s.method, "POST")) .post else .get,
         }) catch {
@@ -225,6 +227,9 @@ fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
             continue;
         };
         defer resp.deinit();
+
+        // Always drain the body to keep the connection in a clean state.
+        _ = resp.body() catch {};
 
         const code = @as(u16, @intCast(@intFromEnum(resp.status())));
         const ok = if (s.status_code == 0)
@@ -402,4 +407,3 @@ test "timeoutNs: returns supplied value when non-zero" {
 test "pollNs: returns default when zero" {
     try std.testing.expectEqual(default_poll_interval_ns, pollNs(0));
 }
-

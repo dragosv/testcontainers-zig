@@ -94,6 +94,10 @@ pub const DockerClient = struct {
         }
 
         if (!acceptable) {
+            // Drain the response body so the connection can be safely reused.
+            // Skipping this leaves unread bytes on the socket which would corrupt
+            // the next request parsed over the same keep-alive connection.
+            _ = resp.body() catch {};
             if (sc == 404) return DockerClientError.NotFound;
             if (sc == 409) return DockerClientError.Conflict;
             if (sc >= 500) return DockerClientError.ServerError;
@@ -494,8 +498,6 @@ pub const DockerClient = struct {
         const resp_body = try self.doRequest(.get, api_path, null, null, &.{200});
         defer self.allocator.free(resp_body);
 
-        std.debug.print("[containerGetByName] searching for name='{s}', response len={}\n", .{ name, resp_body.len });
-
         var parsed = try std.json.parseFromSlice(
             std.json.Value,
             self.allocator,
@@ -504,12 +506,7 @@ pub const DockerClient = struct {
         );
         defer parsed.deinit();
 
-        if (parsed.value != .array) {
-            std.debug.print("[containerGetByName] parsed.value is not array: {}\n", .{parsed.value});
-            return null;
-        }
-
-        std.debug.print("[containerGetByName] container count={}\n", .{parsed.value.array.items.len});
+        if (parsed.value != .array) return null;
 
         for (parsed.value.array.items) |item| {
             if (item != .object) continue;
@@ -523,17 +520,13 @@ pub const DockerClient = struct {
                     full[1..]
                 else
                     full;
-                std.debug.print("[containerGetByName] checking '{s}' vs '{s}'\n", .{ candidate, name });
                 if (std.mem.eql(u8, candidate, name)) {
                     const id_v = item.object.get("Id") orelse continue;
                     if (id_v != .string) continue;
-                    const id = try self.allocator.dupe(u8, id_v.string);
-                    std.debug.print("[containerGetByName] FOUND id={s}\n", .{id});
-                    return id;
+                    return try self.allocator.dupe(u8, id_v.string);
                 }
             }
         }
-        std.debug.print("[containerGetByName] NOT FOUND\n", .{});
         return null;
     }
 

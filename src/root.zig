@@ -149,7 +149,10 @@ pub const DockerProvider = struct {
         req: *const ContainerRequest,
     ) !*DockerContainer {
         const ctr = try self.createContainer(req);
-        errdefer { ctr.terminate() catch {}; ctr.deinit(); }
+        errdefer {
+            ctr.terminate() catch {};
+            ctr.deinit();
+        }
         try ctr.start();
         return ctr;
     }
@@ -171,10 +174,8 @@ pub const DockerProvider = struct {
         // Reuse: find existing container by name
         if (greq.reuse) {
             const name = req.name orelse return error.ContainerNameRequired;
-            std.debug.print("[reuse] searching for container '{s}'\n", .{name});
             if (try self.client.containerGetByName(name)) |existing_id| {
                 defer self.allocator.free(existing_id);
-                std.debug.print("[reuse] found container ID={s}\n", .{existing_id});
                 const ctr = try self.allocator.create(DockerContainer);
                 ctr.* = .{
                     .id = try self.allocator.dupe(u8, existing_id),
@@ -192,7 +193,10 @@ pub const DockerProvider = struct {
 
         const ctr = try self.createContainer(req);
         if (!greq.started) return ctr;
-        errdefer { ctr.terminate() catch {}; ctr.deinit(); }
+        errdefer {
+            ctr.terminate() catch {};
+            ctr.deinit();
+        }
         try ctr.start();
         return ctr;
     }

@@ -356,53 +356,58 @@ pub const DockerContainer = struct {
 fn writeTarEntry(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), filename: []const u8, content: []const u8) !void {
     var header: [512]u8 = std.mem.zeroes([512]u8);
 
-    // name (100 bytes)
+    // name (bytes 0-99, 100 bytes, null-terminated)
     const name_len = @min(filename.len, 99);
     @memcpy(header[0..name_len], filename[0..name_len]);
 
-    // mode (8 bytes)
-    _ = try std.fmt.bufPrint(header[100..107], "{o:0>7}", .{@as(u32, 0o644)});
-    header[107] = ' ';
+    // mode (bytes 100-107): "0000644\0"
+    @memcpy(header[100..108], "0000644\x00");
 
-    // uid, gid (8 bytes each)
-    _ = try std.fmt.bufPrint(header[108..115], "{o:0>7}", .{@as(u32, 0)});
-    header[115] = ' ';
-    _ = try std.fmt.bufPrint(header[116..123], "{o:0>7}", .{@as(u32, 0)});
-    header[123] = ' ';
+    // uid (bytes 108-115): "0000000\0"
+    @memcpy(header[108..116], "0000000\x00");
 
-    // size (12 bytes)
-    _ = try std.fmt.bufPrint(header[124..135], "{o:0>11}", .{content.len});
-    header[135] = ' ';
+    // gid (bytes 116-123): "0000000\0"
+    @memcpy(header[116..124], "0000000\x00");
 
-    // mtime (12 bytes) — zero
-    @memset(header[136..147], '0');
-    header[147] = ' ';
+    // size (bytes 124-135): 11 octal digits + space
+    _ = try std.fmt.bufPrint(header[124..136], "{o:0>11} ", .{content.len});
 
-    // typeflag = '0' (regular file)
+    // mtime (bytes 136-147): 11 octal zeros + space
+    @memcpy(header[136..148], "00000000000 ");
+
+    // checksum (bytes 148-155): fill with spaces first, compute later
+    @memset(header[148..156], ' ');
+
+    // typeflag (byte 156): '0' = regular file
     header[156] = '0';
 
-    // magic "ustar  "
-    @memcpy(header[257..264], "ustar  ");
+    // linkname (bytes 157-256): all zeros (already zero)
 
-    // checksum placeholder
-    @memset(header[148..156], ' ');
+    // magic (bytes 257-262): "ustar\0"
+    @memcpy(header[257..263], "ustar\x00");
+
+    // version (bytes 263-264): "00"
+    @memcpy(header[263..265], "00");
+
+    // Compute checksum
     var checksum: u32 = 0;
     for (header) |b| checksum += b;
-    _ = try std.fmt.bufPrint(header[148..155], "{o:0>6}", .{checksum});
-    header[155] = 0;
-    header[156] = ' ';
+    // Write checksum: 6 octal digits + null + space
+    _ = try std.fmt.bufPrint(header[148..154], "{o:0>6}", .{checksum});
+    header[154] = 0;
+    header[155] = ' ';
 
     try buf.appendSlice(allocator, &header);
     try buf.appendSlice(allocator, content);
 
-    // Pad to 512-byte boundary
+    // Pad content to 512-byte boundary
     const remainder = content.len % 512;
     if (remainder != 0) {
         const padding = 512 - remainder;
         try buf.appendNTimes(allocator, 0, padding);
     }
 
-    // Two zero blocks at end
+    // Two zero blocks (1024 bytes) — end-of-archive marker
     try buf.appendNTimes(allocator, 0, 1024);
 }
 
