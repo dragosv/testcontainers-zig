@@ -1,0 +1,31 @@
+{
+    "name": "TestContainers Zig 0.15.2",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ziglang.vscode-zig",
+                "vadimcn.vscode-lldb"
+            ],
+            "settings": {
+                "lldb.library": "/usr/lib/liblldb.so"
+            }
+        }
+    },
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": "true",
+            "username": "vscode",
+            "userUid": "1000",
+            "userGid": "1000",
+            "upgradePackages": "true"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2.14.0": {
+            "version": "latest",
+            "moby": true
+        },
+        "ghcr.io/devcontainers-extra/features/zig:1": {
+            "version": "0.15.2"
+        }
+    }
+}
