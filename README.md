@@ -1,3 +1,5 @@
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://github.com/codespaces/new?hide_repo_select=true&ref=develop&repo=1163891557&machine=standardLinux32gb&devcontainer_path=.devcontainer%2Fdevcontainer.json&location=EastUs)
+
 [![CI/CD](https://github.com/dragosv/testcontainers-zig/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dragosv/testcontainers-zig/actions/workflows/ci.yml)
 [![Language](https://img.shields.io/badge/Zig-0.15.2-orange.svg)](https://ziglang.org)
 [![Docker](https://img.shields.io/badge/Docker%20Engine%20API-%20%201.44-blue)](https://docs.docker.com/engine/api/v1.44/)
