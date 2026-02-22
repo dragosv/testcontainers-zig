@@ -1,12 +1,33 @@
 version: 2
 updates:
+  # Enable version updates for Swift Package Manager
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "dragosv"  # Replace with actual maintainer
+    assignees:
+      - "dragosv"  # Replace with actual maintainer
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # Enable version updates for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
-    allow:
-      - dependency-type: all
-    groups:
-      dependencies:
-        patterns:
-          - "*"
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "dragosv"  # Replace with actual maintainer
+    assignees:
+      - "dragosv"  # Replace with actual maintainer
+    commit-message:
+      prefix: "ci"
+      include: "scope"
