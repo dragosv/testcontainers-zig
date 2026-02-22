@@ -1,5 +1,6 @@
 {
     "name": "TestContainers Zig 0.15.2",
+    "image": "mcr.microsoft.com/devcontainers/base:trixie",
     "customizations": {
         "vscode": {
             "extensions": [
