@@ -146,8 +146,8 @@ Public API entry point. Exports:
 
 ### `src/docker_client.zig`
 
-`DockerClient` communicates with the Docker Engine via a Unix socket using the **dusty**
-HTTP library. Endpoints used:
+`DockerClient` communicates with the Docker Engine via a Unix socket using a built-in
+HTTP/1.1 client (`std.net.connectUnixSocket`). Endpoints used:
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
@@ -264,12 +264,11 @@ pub const Network = struct {
 ### `examples/basic.zig`
 
 Full nginx example:
-1. Initialise `zio.Runtime`
-2. `tc.run(alloc, "nginx:latest", .{ .wait_strategy = tc.wait.forHttp("/") })`
-3. `ctr.mappedPort("80/tcp", alloc)`
-4. Fetch `/` using a dusty HTTP client
-5. `ctr.exec(&.{"echo", "hello"})`
-6. Print output
+1. `tc.run(alloc, "nginx:latest", .{ .wait_strategy = tc.wait.forHttp("/") })`
+2. `ctr.mappedPort("80/tcp", alloc)`
+3. Fetch `/` using `std.http.Client`
+4. `ctr.exec(&.{"echo", "hello"})`
+5. Print output
 
 ## Adding a New Module
 
@@ -299,9 +298,9 @@ zig build example                   # run examples/basic.zig
 
 | Package | Version | Role |
 |---------|---------|------|
-| `dusty` | main @ 69f47e2b | HTTP over Unix socket |
+| Zig stdlib | built-in | JSON, I/O, HTTP, networking, testing |
 
-zio is a transitive dependency of dusty; it does not need to be declared separately.
+No external dependencies. The library uses a built-in HTTP/1.1 client over Unix domain socket.
 
 ## Project Statistics
 
@@ -311,7 +310,7 @@ zio is a transitive dependency of dusty; it does not need to be declared separat
 | Modules | 10 |
 | Wait strategies | 7 |
 | Integration tests | 24 |
-| External dependencies | 1 |
+| External dependencies | 0 |
 | Zig version | 0.15.2 |
 
 ## Getting Help

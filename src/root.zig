@@ -1,22 +1,18 @@
 /// testcontainers-zig
 ///
 /// A Zig port of https://github.com/testcontainers/testcontainers-go.
-/// Uses https://github.com/dragosv/dusty (main branch) as the
-/// HTTP library for communicating with the Docker Engine over its Unix socket.
+/// Communicates with the Docker Engine over its Unix domain socket using
+/// a built-in HTTP/1.1 client (no external dependencies).
 ///
 /// Quick start:
 ///
 ///   const std = @import("std");
-///   const zio = @import("zio");
 ///   const tc  = @import("testcontainers");
 ///
 ///   pub fn main() !void {
 ///       var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 ///       defer _ = gpa.deinit();
 ///       const allocator = gpa.allocator();
-///
-///       var rt = try zio.Runtime.init(allocator, .{});
-///       defer rt.deinit();
 ///
 ///       const ctr = try tc.run(allocator, "nginx:latest", .{
 ///           .exposed_ports = &.{"80/tcp"},
@@ -27,10 +23,6 @@
 ///       const port = try ctr.mappedPort("80/tcp", allocator);
 ///       std.debug.print("nginx at localhost:{d}\n", .{port});
 ///   }
-///
-/// IMPORTANT: A `zio.Runtime` must be initialised (and kept alive) before
-/// calling any testcontainers function that performs I/O, because dusty's
-/// async networking is driven by the zio event loop.
 const std = @import("std");
 
 // ---------------------------------------------------------------------------

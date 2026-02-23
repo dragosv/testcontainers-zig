@@ -1,14 +1,9 @@
-/// DockerClient — thin wrapper around dusty's HTTP client using Unix sockets
+/// DockerClient — lightweight HTTP client using a raw Unix domain socket
 /// to communicate with the Docker Engine REST API.
 ///
 /// All responses are allocated with the caller-supplied allocator; the caller
 /// is responsible for freeing them unless documented otherwise.
-///
-/// IMPORTANT: A `zio.Runtime` must be initialised on the calling thread before
-/// creating a DockerClient or calling any of its methods, because dusty's
-/// networking is driven by the zio event loop.
 const std = @import("std");
-const dusty = @import("dusty");
 const types = @import("types.zig");
 const container_mod = @import("container.zig");
 
@@ -26,86 +21,293 @@ pub const DockerClientError = error{
     InvalidResponse,
 };
 
+/// HTTP method for Docker API requests.
+const Method = enum {
+    get,
+    post,
+    put,
+    delete,
+
+    fn name(self: Method) []const u8 {
+        return switch (self) {
+            .get => "GET",
+            .post => "POST",
+            .put => "PUT",
+            .delete => "DELETE",
+        };
+    }
+};
+
+/// Metadata parsed from an HTTP response header.
+const ResponseMeta = struct {
+    status_code: u16,
+    content_length: ?usize,
+    chunked: bool,
+};
+
+/// Buffered reader over a raw `std.net.Stream` for incremental HTTP
+/// response parsing.  Avoids one-byte syscalls by reading into an
+/// internal 8 KiB buffer.
+const HttpReader = struct {
+    stream: std.net.Stream,
+    buf: [8192]u8 = undefined,
+    pos: usize = 0,
+    len: usize = 0,
+
+    /// Read a single byte from the buffered stream.
+    fn readByte(self: *HttpReader) !u8 {
+        if (self.pos >= self.len) {
+            self.len = try self.stream.read(&self.buf);
+            self.pos = 0;
+            if (self.len == 0) return error.EndOfStream;
+        }
+        const b = self.buf[self.pos];
+        self.pos += 1;
+        return b;
+    }
+
+    /// Read exactly `dest.len` bytes from the buffered stream.
+    fn readExact(self: *HttpReader, dest: []u8) !void {
+        var written: usize = 0;
+        while (written < dest.len) {
+            if (self.pos >= self.len) {
+                self.len = try self.stream.read(&self.buf);
+                self.pos = 0;
+                if (self.len == 0) return error.EndOfStream;
+            }
+            const available = self.len - self.pos;
+            const needed = dest.len - written;
+            const to_copy = @min(available, needed);
+            @memcpy(dest[written .. written + to_copy], self.buf[self.pos .. self.pos + to_copy]);
+            written += to_copy;
+            self.pos += to_copy;
+        }
+    }
+
+    /// Read a line terminated by `\n`.  Returns the line contents without
+    /// the trailing `\r\n`.  Returns `null` when EOF is reached with no data.
+    fn readLine(self: *HttpReader, out: []u8) !?[]const u8 {
+        var i: usize = 0;
+        while (i < out.len) {
+            const b = self.readByte() catch |err| {
+                if (err == error.EndOfStream) {
+                    return if (i == 0) null else out[0..i];
+                }
+                return err;
+            };
+            if (b == '\n') {
+                const end = if (i > 0 and out[i - 1] == '\r') i - 1 else i;
+                return out[0..end];
+            }
+            out[i] = b;
+            i += 1;
+        }
+        return error.HttpHeaderTooLong;
+    }
+
+    /// Discard all remaining data until EOF.
+    fn drain(self: *HttpReader) void {
+        self.pos = self.len;
+        while (true) {
+            self.len = self.stream.read(&self.buf) catch return;
+            if (self.len == 0) return;
+        }
+    }
+};
+
+/// Send an HTTP/1.1 request over a raw stream.
+fn sendHttpRequest(
+    stream: std.net.Stream,
+    method: Method,
+    path: []const u8,
+    content_type: ?[]const u8,
+    body: ?[]const u8,
+) !void {
+    var hdr_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&hdr_buf);
+    const w = fbs.writer();
+
+    try w.print("{s} {s} HTTP/1.1\r\n", .{ method.name(), path });
+    try w.print("Host: localhost\r\n", .{});
+    if (content_type) |ct| {
+        try w.print("Content-Type: {s}\r\n", .{ct});
+    }
+    if (body) |b| {
+        try w.print("Content-Length: {d}\r\n", .{b.len});
+    }
+    try w.print("Connection: close\r\n\r\n", .{});
+
+    try stream.writeAll(fbs.getWritten());
+    if (body) |b| {
+        try stream.writeAll(b);
+    }
+}
+
+/// Parse the HTTP response status line and headers.
+fn parseResponseHead(reader: *HttpReader) !ResponseMeta {
+    var line_buf: [8192]u8 = undefined;
+
+    // Status line: "HTTP/1.x NNN ..."
+    const status_line = try reader.readLine(&line_buf) orelse return error.InvalidResponse;
+    const first_space = std.mem.indexOfScalar(u8, status_line, ' ') orelse return error.InvalidResponse;
+    const after_space = status_line[first_space + 1 ..];
+    if (after_space.len < 3) return error.InvalidResponse;
+    const status_code = std.fmt.parseInt(u16, after_space[0..3], 10) catch return error.InvalidResponse;
+
+    var content_length: ?usize = null;
+    var chunked = false;
+
+    while (true) {
+        const header_line = try reader.readLine(&line_buf) orelse break;
+        if (header_line.len == 0) break;
+
+        const colon = std.mem.indexOfScalar(u8, header_line, ':') orelse continue;
+        const hdr_name = std.mem.trim(u8, header_line[0..colon], " ");
+        const hdr_value = std.mem.trim(u8, header_line[colon + 1 ..], " ");
+
+        if (std.ascii.eqlIgnoreCase(hdr_name, "content-length")) {
+            content_length = std.fmt.parseInt(usize, hdr_value, 10) catch null;
+        } else if (std.ascii.eqlIgnoreCase(hdr_name, "transfer-encoding")) {
+            if (std.ascii.eqlIgnoreCase(hdr_value, "chunked")) {
+                chunked = true;
+            }
+        }
+    }
+
+    return .{
+        .status_code = status_code,
+        .content_length = content_length,
+        .chunked = chunked,
+    };
+}
+
+/// Read the full response body according to the parsed metadata.
+fn readResponseBody(reader: *HttpReader, meta: ResponseMeta, allocator: std.mem.Allocator) ![]const u8 {
+    if (meta.content_length) |cl| {
+        if (cl == 0) return allocator.dupe(u8, "");
+        const body_buf = try allocator.alloc(u8, cl);
+        errdefer allocator.free(body_buf);
+        try reader.readExact(body_buf);
+        return body_buf;
+    }
+
+    if (meta.chunked) {
+        return readChunkedBody(reader, allocator);
+    }
+
+    // No Content-Length and not chunked — read until connection close.
+    return readUntilClose(reader, allocator);
+}
+
+/// Decode an HTTP chunked transfer-encoded body.
+fn readChunkedBody(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u8 {
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(allocator);
+
+    var line_buf: [128]u8 = undefined;
+
+    while (true) {
+        const size_line = try reader.readLine(&line_buf) orelse break;
+        const semi = std.mem.indexOfScalar(u8, size_line, ';') orelse size_line.len;
+        const trimmed = std.mem.trim(u8, size_line[0..semi], " ");
+        const chunk_size = std.fmt.parseInt(usize, trimmed, 16) catch break;
+
+        if (chunk_size == 0) {
+            // Drain optional trailers.
+            while (true) {
+                const trailer = try reader.readLine(&line_buf) orelse break;
+                if (trailer.len == 0) break;
+            }
+            break;
+        }
+
+        const old_len = body.items.len;
+        try body.ensureTotalCapacity(allocator, old_len + chunk_size);
+        body.items.len = old_len + chunk_size;
+        try reader.readExact(body.items[old_len..]);
+
+        // Consume trailing \r\n after chunk data.
+        _ = try reader.readLine(&line_buf);
+    }
+
+    return body.toOwnedSlice(allocator);
+}
+
+/// Read until the peer closes the connection.
+fn readUntilClose(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u8 {
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(allocator);
+
+    // Flush anything the HttpReader already buffered.
+    if (reader.pos < reader.len) {
+        try body.appendSlice(allocator, reader.buf[reader.pos..reader.len]);
+        reader.pos = reader.len;
+    }
+
+    var tmp: [8192]u8 = undefined;
+    while (true) {
+        const n = reader.stream.read(&tmp) catch break;
+        if (n == 0) break;
+        try body.appendSlice(allocator, tmp[0..n]);
+    }
+
+    return body.toOwnedSlice(allocator);
+}
+
 /// Lightweight Docker HTTP client backed by a Unix domain socket.
 pub const DockerClient = struct {
     allocator: std.mem.Allocator,
     socket_path: []const u8,
-    client: dusty.Client,
 
     pub fn init(allocator: std.mem.Allocator, socket_path: []const u8) DockerClient {
         return .{
             .allocator = allocator,
             .socket_path = socket_path,
-            .client = dusty.Client.init(allocator, .{
-                // Allow large response bodies (e.g. logs, inspect output)
-                .max_response_size = 64 * 1024 * 1024,
-            }),
         };
     }
 
     pub fn deinit(self: *DockerClient) void {
-        self.client.deinit();
+        _ = self;
     }
 
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    /// Build the full URL for a Docker API path.
-    fn apiUrl(self: *DockerClient, path: []const u8) ![]const u8 {
-        return std.fmt.allocPrint(self.allocator, "http://localhost{s}", .{path});
-    }
-
     /// Perform a request and check that the status code is acceptable.
     /// Returns the raw body bytes (caller owns the memory).
     fn doRequest(
         self: *DockerClient,
-        method: dusty.Method,
+        method: Method,
         path: []const u8,
         body: ?[]const u8,
         content_type: ?[]const u8,
         expected_codes: []const u16,
     ) ![]const u8 {
-        const url = try self.apiUrl(path);
-        defer self.allocator.free(url);
+        const stream = try std.net.connectUnixSocket(self.socket_path);
+        defer stream.close();
 
-        var headers: dusty.Headers = .{};
-        defer headers.deinit(self.allocator);
-        if (content_type) |ct| {
-            try headers.put(self.allocator, "Content-Type", ct);
-        }
+        try sendHttpRequest(stream, method, path, content_type, body);
 
-        var resp = try self.client.fetch(url, .{
-            .method = method,
-            .body = body,
-            .unix_socket_path = self.socket_path,
-            .headers = if (content_type != null) &headers else null,
-        });
-        defer resp.deinit();
-
-        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
+        var reader: HttpReader = .{ .stream = stream };
+        const meta = try parseResponseHead(&reader);
 
         var acceptable = false;
         for (expected_codes) |c| {
-            if (c == sc) {
+            if (c == meta.status_code) {
                 acceptable = true;
                 break;
             }
         }
 
         if (!acceptable) {
-            // Drain the response body so the connection can be safely reused.
-            // Skipping this leaves unread bytes on the socket which would corrupt
-            // the next request parsed over the same keep-alive connection.
-            _ = resp.body() catch {};
-            if (sc == 404) return DockerClientError.NotFound;
-            if (sc == 409) return DockerClientError.Conflict;
-            if (sc >= 500) return DockerClientError.ServerError;
+            if (meta.status_code == 404) return DockerClientError.NotFound;
+            if (meta.status_code == 409) return DockerClientError.Conflict;
+            if (meta.status_code >= 500) return DockerClientError.ServerError;
             return DockerClientError.ApiError;
         }
 
-        const resp_body = try resp.body() orelse "";
-        return self.allocator.dupe(u8, resp_body);
+        return try readResponseBody(&reader, meta, self.allocator);
     }
 
     // -----------------------------------------------------------------------
@@ -140,29 +342,20 @@ pub const DockerClient = struct {
         );
         defer self.allocator.free(api_path);
 
-        const url = try self.apiUrl(api_path);
-        defer self.allocator.free(url);
-
         // imagePull returns a streaming JSON progress response.
-        // We use a streaming reader to drain it without buffering the whole body,
-        // which avoids hitting max_response_size for large image pulls.
-        var resp = try self.client.fetch(url, .{
-            .method = .post,
-            .unix_socket_path = self.socket_path,
-            .decompress = false,
-        });
-        defer resp.deinit();
+        // We open a dedicated connection and drain the stream to wait for
+        // completion without buffering the entire (potentially huge) body.
+        const stream = try std.net.connectUnixSocket(self.socket_path);
+        defer stream.close();
 
-        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
-        if (sc != 200) return DockerClientError.ApiError;
+        try sendHttpRequest(stream, .post, api_path, null, null);
+
+        var reader: HttpReader = .{ .stream = stream };
+        const meta = try parseResponseHead(&reader);
+        if (meta.status_code != 200) return DockerClientError.ApiError;
 
         // Drain the progress stream to wait for completion.
-        const r = resp.reader();
-        var buf: [4096]u8 = undefined;
-        while (true) {
-            const n = r.readSliceShort(&buf) catch break;
-            if (n == 0) break;
-        }
+        reader.drain();
     }
 
     /// Check if an image exists locally. Returns true if found.
@@ -537,17 +730,15 @@ pub const DockerClient = struct {
     /// Ping the Docker daemon. Returns true on success.
     pub fn ping(self: *DockerClient) !bool {
         const api_path = "/" ++ api_version ++ "/_ping";
-        const url = try self.apiUrl(api_path);
-        defer self.allocator.free(url);
 
-        var resp = self.client.fetch(url, .{
-            .method = .get,
-            .unix_socket_path = self.socket_path,
-        }) catch return false;
-        defer resp.deinit();
+        const stream = std.net.connectUnixSocket(self.socket_path) catch return false;
+        defer stream.close();
 
-        const sc: u16 = @as(u16, @intCast(@intFromEnum(resp.status())));
-        return sc == 200;
+        sendHttpRequest(stream, .get, api_path, null, null) catch return false;
+
+        var reader: HttpReader = .{ .stream = stream };
+        const meta = parseResponseHead(&reader) catch return false;
+        return meta.status_code == 200;
     }
 };
 
