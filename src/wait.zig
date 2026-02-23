@@ -199,8 +199,6 @@ fn waitLog(s: LogStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !vo
 // --- ForHTTP ----------------------------------------------------------------
 
 fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !void {
-    const dusty = @import("dusty");
-
     const deadline = std.time.nanoTimestamp() + @as(i128, @intCast(timeoutNs(s.startup_timeout_ns)));
     const poll = pollNs(s.poll_interval_ns);
 
@@ -215,23 +213,18 @@ fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
     defer alloc.free(url);
 
     while (std.time.nanoTimestamp() < deadline) {
-        // Create a fresh client per attempt to avoid connection pool corruption
-        // when the server is not yet ready and resets connections.
-        var client = dusty.Client.init(alloc, .{ .max_idle_connections = 0 });
+        var client: std.http.Client = .{ .allocator = alloc };
         defer client.deinit();
 
-        var resp = client.fetch(url, .{
-            .method = if (std.mem.eql(u8, s.method, "POST")) .post else .get,
+        const result = client.fetch(.{
+            .location = .{ .url = url },
+            .method = if (std.mem.eql(u8, s.method, "POST")) .POST else .GET,
         }) catch {
             std.Thread.sleep(poll);
             continue;
         };
-        defer resp.deinit();
 
-        // Always drain the body to keep the connection in a clean state.
-        _ = resp.body() catch {};
-
-        const code = @as(u16, @intCast(@intFromEnum(resp.status())));
+        const code: u16 = @intFromEnum(result.status);
         const ok = if (s.status_code == 0)
             code >= 200 and code < 300
         else

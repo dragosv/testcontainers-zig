@@ -38,7 +38,7 @@ There is no separate formatter or linter. Follow the style rules below and let
 
 ## Architecture Rules
 
-- **Single library**: all code lives under `src/`; `dusty` is the only external dependency.
+- **Single library**: all code lives under `src/`; no external dependencies (uses built-in HTTP/1.1 client over Unix domain socket).
 - **Tagged unions over protocols**: `wait.Strategy` is a tagged union, not an interface.
 - **Struct-literal configuration**: `ContainerRequest` uses default field values;
   no builder methods or method chaining.
