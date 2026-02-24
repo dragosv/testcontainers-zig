@@ -939,3 +939,279 @@ fn uriEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     }
     return out.toOwnedSlice(allocator);
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// Create a mock std.net.Stream backed by a pipe pre-filled with `data`.
+/// The write end is closed before returning so the read end will see EOF
+/// after all bytes are consumed.  The caller owns the returned stream handle
+/// and must call `stream.close()` when done.
+fn pipeStream(data: []const u8) !std.net.Stream {
+    const fds = try std.posix.pipe();
+    errdefer std.posix.close(fds[0]);
+    defer std.posix.close(fds[1]);
+    if (data.len > 0) _ = try std.posix.write(fds[1], data);
+    return .{ .handle = fds[0] };
+}
+
+test "HttpReader.readByte: returns bytes in order and EndOfStream at EOF" {
+    const stream = try pipeStream("ab");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    try std.testing.expectEqual(@as(u8, 'a'), try reader.readByte());
+    try std.testing.expectEqual(@as(u8, 'b'), try reader.readByte());
+    try std.testing.expectError(error.EndOfStream, reader.readByte());
+}
+
+test "HttpReader.readExact: reads the requested number of bytes" {
+    const stream = try pipeStream("hello world");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [5]u8 = undefined;
+    try reader.readExact(&buf);
+    try std.testing.expectEqualStrings("hello", &buf);
+    var buf2: [6]u8 = undefined;
+    try reader.readExact(&buf2);
+    try std.testing.expectEqualStrings(" world", &buf2);
+}
+
+test "HttpReader.readExact: returns EndOfStream when data is insufficient" {
+    const stream = try pipeStream("hi");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [5]u8 = undefined;
+    try std.testing.expectError(error.EndOfStream, reader.readExact(&buf));
+}
+
+test "HttpReader.readLine: strips CRLF terminators" {
+    const stream = try pipeStream("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("HTTP/1.1 200 OK", (try reader.readLine(&buf)).?);
+    try std.testing.expectEqualStrings("Content-Length: 5", (try reader.readLine(&buf)).?);
+    try std.testing.expectEqualStrings("", (try reader.readLine(&buf)).?);
+}
+
+test "HttpReader.readLine: accepts LF-only terminators" {
+    const stream = try pipeStream("line1\nline2\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("line1", (try reader.readLine(&buf)).?);
+    try std.testing.expectEqualStrings("line2", (try reader.readLine(&buf)).?);
+}
+
+test "HttpReader.readLine: returns null on empty EOF" {
+    const stream = try pipeStream("");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [256]u8 = undefined;
+    try std.testing.expect((try reader.readLine(&buf)) == null);
+}
+
+test "HttpReader.readLine: returns partial data when EOF reached without newline" {
+    const stream = try pipeStream("no-newline");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("no-newline", (try reader.readLine(&buf)).?);
+}
+
+test "HttpReader.readLine: returns HttpHeaderTooLong when line exceeds buffer" {
+    const data = "A" ** 300 ++ "\n";
+    const stream = try pipeStream(data);
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    var buf: [64]u8 = undefined;
+    try std.testing.expectError(error.HttpHeaderTooLong, reader.readLine(&buf));
+}
+
+test "parseResponseHead: parses 200 OK with Content-Length" {
+    const stream = try pipeStream("HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const meta = try parseResponseHead(&reader);
+    try std.testing.expectEqual(@as(u16, 200), meta.status_code);
+    try std.testing.expectEqual(@as(?usize, 42), meta.content_length);
+    try std.testing.expect(!meta.chunked);
+}
+
+test "parseResponseHead: parses chunked Transfer-Encoding" {
+    const stream = try pipeStream("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const meta = try parseResponseHead(&reader);
+    try std.testing.expectEqual(@as(u16, 200), meta.status_code);
+    try std.testing.expect(meta.content_length == null);
+    try std.testing.expect(meta.chunked);
+}
+
+test "parseResponseHead: parses 404 Not Found" {
+    const stream = try pipeStream("HTTP/1.1 404 Not Found\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const meta = try parseResponseHead(&reader);
+    try std.testing.expectEqual(@as(u16, 404), meta.status_code);
+    try std.testing.expect(meta.content_length == null);
+    try std.testing.expect(!meta.chunked);
+}
+
+test "parseResponseHead: returns InvalidResponse on empty input" {
+    const stream = try pipeStream("");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    try std.testing.expectError(error.InvalidResponse, parseResponseHead(&reader));
+}
+
+test "parseResponseHead: returns InvalidResponse on status line without space" {
+    const stream = try pipeStream("INVALID\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    try std.testing.expectError(error.InvalidResponse, parseResponseHead(&reader));
+}
+
+test "parseResponseHead: returns InvalidResponse when status code is too short" {
+    const stream = try pipeStream("HTTP/1.1 20\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    try std.testing.expectError(error.InvalidResponse, parseResponseHead(&reader));
+}
+
+test "parseResponseHead: skips headers without a colon separator" {
+    const stream = try pipeStream("HTTP/1.1 200 OK\r\nBadHeader\r\nContent-Length: 10\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const meta = try parseResponseHead(&reader);
+    try std.testing.expectEqual(@as(u16, 200), meta.status_code);
+    try std.testing.expectEqual(@as(?usize, 10), meta.content_length);
+}
+
+test "parseResponseHead: handles case-insensitive header names" {
+    const stream = try pipeStream("HTTP/1.1 200 OK\r\ncontent-length: 7\r\ntransfer-encoding: chunked\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const meta = try parseResponseHead(&reader);
+    try std.testing.expectEqual(@as(?usize, 7), meta.content_length);
+    try std.testing.expect(meta.chunked);
+}
+
+test "readChunkedBody: decodes a single chunk" {
+    const stream = try pipeStream("5\r\nhello\r\n0\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello", body);
+}
+
+test "readChunkedBody: decodes multiple chunks" {
+    const stream = try pipeStream("5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello world", body);
+}
+
+test "readChunkedBody: returns empty slice for zero-length first chunk" {
+    const stream = try pipeStream("0\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("", body);
+}
+
+test "readChunkedBody: ignores chunk extensions after semicolon" {
+    const stream = try pipeStream("5;ext=val\r\nhello\r\n0\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello", body);
+}
+
+test "readChunkedBody: drains optional trailers before terminating" {
+    const stream = try pipeStream("5\r\nhello\r\n0\r\nTrailer: value\r\n\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello", body);
+}
+
+test "readChunkedBody: returns accumulated data on invalid chunk size" {
+    // First chunk is valid; second chunk line has an unparseable size.
+    const stream = try pipeStream("5\r\nhello\r\nINVALID\r\n");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readChunkedBody(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello", body);
+}
+
+test "readUntilClose: reads all data to EOF" {
+    const stream = try pipeStream("hello world");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readUntilClose(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("hello world", body);
+}
+
+test "readUntilClose: returns empty slice for empty stream" {
+    const stream = try pipeStream("");
+    defer stream.close();
+    var reader = HttpReader{ .stream = stream };
+    const body = try readUntilClose(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("", body);
+}
+
+test "readUntilClose: flushes data already buffered in HttpReader" {
+    // Simulate bytes already read into the internal buffer (e.g. by parseResponseHead).
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    std.posix.close(fds[1]); // close write end → EOF on read
+    var reader = HttpReader{ .stream = .{ .handle = fds[0] } };
+    const pre = "pre-buffered";
+    @memcpy(reader.buf[0..pre.len], pre);
+    reader.len = pre.len;
+    reader.pos = 0;
+    const body = try readUntilClose(&reader, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqualStrings("pre-buffered", body);
+}
+
+test "sendHttpRequest: writes a valid GET request" {
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    const write_stream = std.net.Stream{ .handle = fds[1] };
+    try sendHttpRequest(write_stream, .get, "/v1.46/_ping", null, null);
+    std.posix.close(fds[1]);
+    var buf: [4096]u8 = undefined;
+    const n = try std.posix.read(fds[0], &buf);
+    const req = buf[0..n];
+    try std.testing.expect(std.mem.startsWith(u8, req, "GET /v1.46/_ping HTTP/1.1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, req, "Host: localhost\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, req, "Connection: close\r\n") != null);
+}
+
+test "sendHttpRequest: writes Content-Type and Content-Length for POST with body" {
+    const fds = try std.posix.pipe();
+    defer std.posix.close(fds[0]);
+    const write_stream = std.net.Stream{ .handle = fds[1] };
+    const body = "{\"Image\":\"alpine\"}";
+    try sendHttpRequest(write_stream, .post, "/v1.46/containers/create", "application/json", body);
+    std.posix.close(fds[1]);
+    var buf: [4096]u8 = undefined;
+    const n = try std.posix.read(fds[0], &buf);
+    const req = buf[0..n];
+    try std.testing.expect(std.mem.startsWith(u8, req, "POST /v1.46/containers/create HTTP/1.1\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, req, "Content-Type: application/json\r\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, req, "Content-Length: 18\r\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, req, body));
+}
