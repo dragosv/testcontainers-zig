@@ -4,24 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const dusty_dep = b.dependency("dusty", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const zio_dep = dusty_dep.builder.dependency("zio", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     // Main library module
     const mod = b.addModule("testcontainers", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("dusty", dusty_dep.module("dusty"));
-    mod.addImport("zio", zio_dep.module("zio"));
 
     // Unit tests
     const lib_tests = b.addTest(.{
@@ -31,8 +19,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    lib_tests.root_module.addImport("dusty", dusty_dep.module("dusty"));
-    lib_tests.root_module.addImport("zio", zio_dep.module("zio"));
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const test_step = b.step("test", "Run library tests");
@@ -46,8 +32,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    integration_tests.root_module.addImport("dusty", dusty_dep.module("dusty"));
-    integration_tests.root_module.addImport("zio", zio_dep.module("zio"));
     integration_tests.root_module.addImport("testcontainers", mod);
 
     const run_integration_tests = b.addRunArtifact(integration_tests);
@@ -64,8 +48,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     example.root_module.addImport("testcontainers", mod);
-    example.root_module.addImport("zio", zio_dep.module("zio"));
-    example.root_module.addImport("dusty", dusty_dep.module("dusty"));
     b.installArtifact(example);
 
     const run_example = b.addRunArtifact(example);
