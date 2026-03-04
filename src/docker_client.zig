@@ -117,7 +117,7 @@ const HttpReader = struct {
 
 /// Send an HTTP/1.1 request over a raw stream.
 fn sendHttpRequest(
-    stream: std.net.Stream,
+    stream: anytype,
     method: Method,
     path: []const u8,
     content_type: ?[]const u8,
@@ -1189,7 +1189,7 @@ test "readUntilClose: flushes data already buffered in HttpReader" {
 test "sendHttpRequest: writes a valid GET request" {
     const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
-    const write_stream = std.net.Stream{ .handle = fds[1] };
+    const write_stream = std.fs.File{ .handle = fds[1] };
     try sendHttpRequest(write_stream, .get, "/v1.46/_ping", null, null);
     std.posix.close(fds[1]);
     var buf: [4096]u8 = undefined;
@@ -1203,7 +1203,7 @@ test "sendHttpRequest: writes a valid GET request" {
 test "sendHttpRequest: writes Content-Type and Content-Length for POST with body" {
     const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
-    const write_stream = std.net.Stream{ .handle = fds[1] };
+    const write_stream = std.fs.File{ .handle = fds[1] };
     const body = "{\"Image\":\"alpine\"}";
     try sendHttpRequest(write_stream, .post, "/v1.46/containers/create", "application/json", body);
     std.posix.close(fds[1]);

@@ -83,7 +83,15 @@ pub const DockerProvider = struct {
     client: DockerClient,
 
     pub fn init(allocator: std.mem.Allocator) DockerProvider {
-        return init_with_socket(allocator, docker_socket);
+        var socket: []const u8 = docker_socket;
+        if (std.posix.getenv("DOCKER_HOST")) |host| {
+            if (std.mem.startsWith(u8, host, "unix://")) {
+                socket = host["unix://".len..];
+            } else {
+                socket = host;
+            }
+        }
+        return init_with_socket(allocator, socket);
     }
 
     pub fn init_with_socket(allocator: std.mem.Allocator, socket_path: []const u8) DockerProvider {
