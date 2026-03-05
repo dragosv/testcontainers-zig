@@ -127,7 +127,7 @@ fn sendHttpRequest(
     content_type: ?[]const u8,
     body: ?[]const u8,
 ) !void {
-    var hdr_buf = std.std.ArrayList(u8).initCapacity(allocator, 0);
+    var hdr_buf = std.ArrayList(u8).initCapacity(allocator, 0);
     defer hdr_buf.deinit();
     const w = hdr_buf.writer();
 
