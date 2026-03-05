@@ -223,6 +223,7 @@ fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
             std.Thread.sleep(poll);
             continue;
         };
+        defer result.deinit(alloc);
 
         const code: u16 = @intFromEnum(result.status);
         const ok = if (s.status_code == 0)
