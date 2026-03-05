@@ -19,6 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Enable io_uring (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.io_uring_disabled=0 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
