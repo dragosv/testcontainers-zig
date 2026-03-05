@@ -19,22 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install and start Docker (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install docker docker-compose colima
-          colima start --memory 4 --cpu 2
-          # Wait for Docker to be ready
-          for i in $(seq 1 30); do
-            if docker info > /dev/null 2>&1; then
-              echo "Docker is ready!"
-              break
-            fi
-            echo "Waiting for Docker to start... ($i/30)"
-            sleep 2
-          done
-          docker info
-
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
@@ -42,7 +26,7 @@ jobs:
       - name: Check zig version
         run: zig version
 
-      - name: Build all examples
+      - name: Build all
         run: zig build
 
       - name: Run tests
