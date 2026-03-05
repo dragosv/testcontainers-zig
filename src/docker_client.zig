@@ -117,15 +117,16 @@ const HttpReader = struct {
 
 /// Send an HTTP/1.1 request over a raw stream.
 fn sendHttpRequest(
+    allocator: std.mem.Allocator,
     stream: anytype,
     method: Method,
     path: []const u8,
     content_type: ?[]const u8,
     body: ?[]const u8,
 ) !void {
-    var hdr_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&hdr_buf);
-    const w = fbs.writer();
+    var hdr_buf = std.ArrayList(u8).init(allocator);
+    defer hdr_buf.deinit();
+    const w = hdr_buf.writer();
 
     try w.print("{s} {s} HTTP/1.1\r\n", .{ method.name(), path });
     try w.print("Host: localhost\r\n", .{});
@@ -137,7 +138,7 @@ fn sendHttpRequest(
     }
     try w.print("Connection: close\r\n\r\n", .{});
 
-    try stream.writeAll(fbs.getWritten());
+    try stream.writeAll(hdr_buf.items);
     if (body) |b| {
         try stream.writeAll(b);
     }
@@ -287,7 +288,7 @@ pub const DockerClient = struct {
         const stream = try std.net.connectUnixSocket(self.socket_path);
         defer stream.close();
 
-        try sendHttpRequest(stream, method, path, content_type, body);
+        try sendHttpRequest(self.allocator, stream, method, path, content_type, body);
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = try parseResponseHead(&reader);
@@ -348,7 +349,7 @@ pub const DockerClient = struct {
         const stream = try std.net.connectUnixSocket(self.socket_path);
         defer stream.close();
 
-        try sendHttpRequest(stream, .post, api_path, null, null);
+        try sendHttpRequest(self.allocator, stream, .post, api_path, null, null);
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = try parseResponseHead(&reader);
@@ -734,7 +735,7 @@ pub const DockerClient = struct {
         const stream = std.net.connectUnixSocket(self.socket_path) catch return false;
         defer stream.close();
 
-        sendHttpRequest(stream, .get, api_path, null, null) catch return false;
+        sendHttpRequest(self.allocator, stream, .get, api_path, null, null) catch return false;
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = parseResponseHead(&reader) catch return false;
@@ -1190,7 +1191,7 @@ test "sendHttpRequest: writes a valid GET request" {
     const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
     const write_stream = std.fs.File{ .handle = fds[1] };
-    try sendHttpRequest(write_stream, .get, "/v1.46/_ping", null, null);
+    try sendHttpRequest(std.testing.allocator, write_stream, .get, "/v1.46/_ping", null, null);
     std.posix.close(fds[1]);
     var buf: [4096]u8 = undefined;
     const n = try std.posix.read(fds[0], &buf);
@@ -1205,7 +1206,7 @@ test "sendHttpRequest: writes Content-Type and Content-Length for POST with body
     defer std.posix.close(fds[0]);
     const write_stream = std.fs.File{ .handle = fds[1] };
     const body = "{\"Image\":\"alpine\"}";
-    try sendHttpRequest(write_stream, .post, "/v1.46/containers/create", "application/json", body);
+    try sendHttpRequest(std.testing.allocator, write_stream, .post, "/v1.46/containers/create", "application/json", body);
     std.posix.close(fds[1]);
     var buf: [4096]u8 = undefined;
     const n = try std.posix.read(fds[0], &buf);
