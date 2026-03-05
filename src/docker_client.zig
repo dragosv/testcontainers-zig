@@ -396,11 +396,36 @@ pub const DockerClient = struct {
 
         // Docker returns 200 OK even for pull failures; errors are embedded as
         // {"error":"..."} JSON objects in the newline-delimited progress stream.
-        // Read the full stream and scan each line for an error field.
-        const pull_body = try readResponseBody(&reader, meta, self.allocator);
-        defer self.allocator.free(pull_body);
+        // We read the stream incrementally to avoid allocating the whole body.
+        if (meta.chunked) {
+            var line_buf: [4096]u8 = undefined;
+            while (true) {
+                const size_line = try reader.readLine(&line_buf) orelse return error.InvalidResponse;
+                const semi = std.mem.indexOfScalar(u8, size_line, ';') orelse size_line.len;
+                const trimmed = std.mem.trim(u8, size_line[0..semi], " ");
+                const chunk_size = std.fmt.parseInt(usize, trimmed, 16) catch return error.InvalidResponse;
 
-        try checkPullStreamErrors(self.allocator, pull_body);
+                if (chunk_size == 0) {
+                    while (true) {
+                        const trailer = try reader.readLine(&line_buf) orelse break;
+                        if (trailer.len == 0) break;
+                    }
+                    break;
+                }
+
+                const chunk = try self.allocator.alloc(u8, chunk_size);
+                defer self.allocator.free(chunk);
+                try reader.readExact(chunk);
+
+                _ = try reader.readLine(&line_buf); // trailing \r\n
+
+                try checkPullStreamErrors(self.allocator, chunk);
+            }
+        } else {
+            const pull_body = try readResponseBody(&reader, meta, self.allocator);
+            defer self.allocator.free(pull_body);
+            try checkPullStreamErrors(self.allocator, pull_body);
+        }
     }
 
     /// Check if an image exists locally. Returns true if found.

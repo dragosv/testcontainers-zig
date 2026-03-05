@@ -94,7 +94,6 @@ pub const DockerProvider = struct {
                 socket = host;
             }
         }
-        }
         return init_with_socket(allocator, socket);
     }
 
