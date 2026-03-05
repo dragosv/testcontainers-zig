@@ -210,7 +210,7 @@ fn readChunkedBody(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u
         const size_line = try reader.readLine(&line_buf) orelse break;
         const semi = std.mem.indexOfScalar(u8, size_line, ';') orelse size_line.len;
         const trimmed = std.mem.trim(u8, size_line[0..semi], " ");
-        const chunk_size = std.fmt.parseInt(usize, trimmed, 16) catch break;
+        const chunk_size = std.fmt.parseInt(usize, trimmed, 16) catch return error.InvalidResponse;
 
         if (chunk_size == 0) {
             // Drain optional trailers.
