@@ -182,17 +182,19 @@ fn parseResponseHead(reader: *HttpReader) !ResponseMeta {
 }
 
 /// Read the full response body according to the parsed metadata.
+/// Per RFC 7230 §3.3.3, Transfer-Encoding takes precedence over Content-Length
+/// when both are present.
 fn readResponseBody(reader: *HttpReader, meta: ResponseMeta, allocator: std.mem.Allocator) ![]const u8 {
+    if (meta.chunked) {
+        return readChunkedBody(reader, allocator);
+    }
+
     if (meta.content_length) |cl| {
         if (cl == 0) return allocator.dupe(u8, "");
         const body_buf = try allocator.alloc(u8, cl);
         errdefer allocator.free(body_buf);
         try reader.readExact(body_buf);
         return body_buf;
-    }
-
-    if (meta.chunked) {
-        return readChunkedBody(reader, allocator);
     }
 
     // No Content-Length and not chunked — read until connection close.
