@@ -87,9 +87,13 @@ pub const DockerProvider = struct {
         if (std.posix.getenv("DOCKER_HOST")) |host| {
             if (std.mem.startsWith(u8, host, "unix://")) {
                 socket = host["unix://".len..];
+            } else if (std.mem.indexOf(u8, host, "://") != null) {
+                // Unsupported transport for this Unix-socket-only client.
+                socket = docker_socket;
             } else {
                 socket = host;
             }
+        }
         }
         return init_with_socket(allocator, socket);
     }
