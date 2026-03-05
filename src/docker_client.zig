@@ -204,7 +204,6 @@ fn readResponseBody(reader: *HttpReader, meta: ResponseMeta, allocator: std.mem.
     // No Content-Length and not chunked — read until connection close.
     return readUntilClose(reader, allocator);
 }
-}
 
 /// Decode an HTTP chunked transfer-encoded body.
 fn readChunkedBody(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u8 {
