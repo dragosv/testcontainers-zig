@@ -204,7 +204,8 @@ fn readChunkedBody(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u
     var body: std.ArrayList(u8) = .empty;
     errdefer body.deinit(allocator);
 
-    var line_buf: [128]u8 = undefined;
+    // Use a reasonably large buffer to accommodate chunk extensions and trailer lines.
+    var line_buf: [4096]u8 = undefined;
 
     while (true) {
         const size_line = try reader.readLine(&line_buf) orelse break;
