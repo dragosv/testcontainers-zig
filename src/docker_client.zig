@@ -19,6 +19,9 @@ pub const DockerClientError = error{
     Conflict,
     ServerError,
     InvalidResponse,
+    /// The Docker API returned a 200 OK but embedded an error object in the
+    /// streaming JSON response (e.g. image not found, authentication failure).
+    ImagePullFailed,
 };
 
 /// HTTP method for Docker API requests.
@@ -117,15 +120,16 @@ const HttpReader = struct {
 
 /// Send an HTTP/1.1 request over a raw stream.
 fn sendHttpRequest(
+    allocator: std.mem.Allocator,
     stream: anytype,
     method: Method,
     path: []const u8,
     content_type: ?[]const u8,
     body: ?[]const u8,
 ) !void {
-    var hdr_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&hdr_buf);
-    const w = fbs.writer();
+    var hdr_buf = std.ArrayList(u8).init(allocator);
+    defer hdr_buf.deinit();
+    const w = hdr_buf.writer();
 
     try w.print("{s} {s} HTTP/1.1\r\n", .{ method.name(), path });
     try w.print("Host: localhost\r\n", .{});
@@ -137,7 +141,7 @@ fn sendHttpRequest(
     }
     try w.print("Connection: close\r\n\r\n", .{});
 
-    try stream.writeAll(fbs.getWritten());
+    try stream.writeAll(hdr_buf.items);
     if (body) |b| {
         try stream.writeAll(b);
     }
@@ -200,16 +204,18 @@ fn readResponseBody(reader: *HttpReader, meta: ResponseMeta, allocator: std.mem.
     // No Content-Length and not chunked — read until connection close.
     return readUntilClose(reader, allocator);
 }
+}
 
 /// Decode an HTTP chunked transfer-encoded body.
 fn readChunkedBody(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u8 {
     var body: std.ArrayList(u8) = .empty;
     errdefer body.deinit(allocator);
 
-    var line_buf: [128]u8 = undefined;
+    // Use a reasonably large buffer to accommodate chunk extensions and trailer lines.
+    var line_buf: [4096]u8 = undefined;
 
     while (true) {
-        const size_line = try reader.readLine(&line_buf) orelse break;
+        const size_line = try reader.readLine(&line_buf) orelse return error.InvalidResponse;
         const semi = std.mem.indexOfScalar(u8, size_line, ';') orelse size_line.len;
         const trimmed = std.mem.trim(u8, size_line[0..semi], " ");
         const chunk_size = std.fmt.parseInt(usize, trimmed, 16) catch return error.InvalidResponse;
@@ -256,6 +262,39 @@ fn readUntilClose(reader: *HttpReader, allocator: std.mem.Allocator) ![]const u8
     return body.toOwnedSlice(allocator);
 }
 
+/// Scan a newline-delimited JSON pull-progress stream for embedded error objects.
+///
+/// Docker's image-pull endpoint returns HTTP 200 OK even on failure; pull
+/// errors such as "image not found" or "authentication required" are reported
+/// as `{"error":"..."}` JSON objects somewhere in the streaming body.  This
+/// helper iterates every line of `body`, attempts to parse lines that look
+/// like JSON objects, and returns `ImagePullFailed` as soon as any such line
+/// contains an `"error"` key.  Malformed lines are silently skipped.
+/// The Docker error message, when present, is written to the log at `.debug`
+/// level so callers can diagnose pull failures.
+fn checkPullStreamErrors(allocator: std.mem.Allocator, body: []const u8) !void {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r");
+        if (trimmed.len == 0 or trimmed[0] != '{') continue;
+        const parsed = std.json.parseFromSlice(
+            std.json.Value,
+            allocator,
+            trimmed,
+            .{},
+        ) catch continue;
+        defer parsed.deinit();
+        if (parsed.value == .object) {
+            if (parsed.value.object.get("error")) |err_val| {
+                if (err_val == .string) {
+                    std.log.debug("docker image pull failed: {s}", .{err_val.string});
+                }
+                return DockerClientError.ImagePullFailed;
+            }
+        }
+    }
+}
+
 /// Lightweight Docker HTTP client backed by a Unix domain socket.
 pub const DockerClient = struct {
     allocator: std.mem.Allocator,
@@ -289,7 +328,7 @@ pub const DockerClient = struct {
         const stream = try std.net.connectUnixSocket(self.socket_path);
         defer stream.close();
 
-        try sendHttpRequest(stream, method, path, content_type, body);
+        try sendHttpRequest(self.allocator, stream, method, path, content_type, body);
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = try parseResponseHead(&reader);
@@ -350,14 +389,19 @@ pub const DockerClient = struct {
         const stream = try std.net.connectUnixSocket(self.socket_path);
         defer stream.close();
 
-        try sendHttpRequest(stream, .post, api_path, null, null);
+        try sendHttpRequest(self.allocator, stream, .post, api_path, null, null);
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = try parseResponseHead(&reader);
         if (meta.status_code != 200) return DockerClientError.ApiError;
 
-        // Drain the progress stream to wait for completion.
-        reader.drain();
+        // Docker returns 200 OK even for pull failures; errors are embedded as
+        // {"error":"..."} JSON objects in the newline-delimited progress stream.
+        // Read the full stream and scan each line for an error field.
+        const pull_body = try readResponseBody(&reader, meta, self.allocator);
+        defer self.allocator.free(pull_body);
+
+        try checkPullStreamErrors(self.allocator, pull_body);
     }
 
     /// Check if an image exists locally. Returns true if found.
@@ -736,7 +780,7 @@ pub const DockerClient = struct {
         const stream = std.net.connectUnixSocket(self.socket_path) catch return false;
         defer stream.close();
 
-        sendHttpRequest(stream, .get, api_path, null, null) catch return false;
+        sendHttpRequest(self.allocator, stream, .get, api_path, null, null) catch return false;
 
         var reader: HttpReader = .{ .stream = stream };
         const meta = parseResponseHead(&reader) catch return false;
@@ -1145,14 +1189,12 @@ test "readChunkedBody: drains optional trailers before terminating" {
     try std.testing.expectEqualStrings("hello", body);
 }
 
-test "readChunkedBody: returns accumulated data on invalid chunk size" {
+test "readChunkedBody: returns InvalidResponse on invalid chunk size" {
     // First chunk is valid; second chunk line has an unparseable size.
     const stream = try pipeStream("5\r\nhello\r\nINVALID\r\n");
     defer stream.close();
     var reader = HttpReader{ .stream = stream };
-    const body = try readChunkedBody(&reader, std.testing.allocator);
-    defer std.testing.allocator.free(body);
-    try std.testing.expectEqualStrings("hello", body);
+    try std.testing.expectError(error.InvalidResponse, readChunkedBody(&reader, std.testing.allocator));
 }
 
 test "readUntilClose: reads all data to EOF" {
@@ -1192,7 +1234,7 @@ test "sendHttpRequest: writes a valid GET request" {
     const fds = try std.posix.pipe();
     defer std.posix.close(fds[0]);
     const write_stream = std.fs.File{ .handle = fds[1] };
-    try sendHttpRequest(write_stream, .get, "/v1.46/_ping", null, null);
+    try sendHttpRequest(std.testing.allocator, write_stream, .get, "/v1.46/_ping", null, null);
     std.posix.close(fds[1]);
     var buf: [4096]u8 = undefined;
     const n = try std.posix.read(fds[0], &buf);
@@ -1207,7 +1249,7 @@ test "sendHttpRequest: writes Content-Type and Content-Length for POST with body
     defer std.posix.close(fds[0]);
     const write_stream = std.fs.File{ .handle = fds[1] };
     const body = "{\"Image\":\"alpine\"}";
-    try sendHttpRequest(write_stream, .post, "/v1.46/containers/create", "application/json", body);
+    try sendHttpRequest(std.testing.allocator, write_stream, .post, "/v1.46/containers/create", "application/json", body);
     std.posix.close(fds[1]);
     var buf: [4096]u8 = undefined;
     const n = try std.posix.read(fds[0], &buf);
@@ -1216,4 +1258,43 @@ test "sendHttpRequest: writes Content-Type and Content-Length for POST with body
     try std.testing.expect(std.mem.indexOf(u8, req, "Content-Type: application/json\r\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, req, "Content-Length: 18\r\n") != null);
     try std.testing.expect(std.mem.endsWith(u8, req, body));
+}
+
+test "checkPullStreamErrors: returns ImagePullFailed when error key is present" {
+    const body =
+        \\{"status":"Pulling from library/nonexistent"}
+        \\{"errorDetail":{"message":"manifest for nonexistent:latest not found"},"error":"manifest for nonexistent:latest not found"}
+        \\
+    ;
+    try std.testing.expectError(
+        DockerClientError.ImagePullFailed,
+        checkPullStreamErrors(std.testing.allocator, body),
+    );
+}
+
+test "checkPullStreamErrors: succeeds when stream contains no error objects" {
+    const body =
+        \\{"status":"Pulling from library/alpine","id":"latest"}
+        \\{"status":"Pull complete","progressDetail":{},"id":"sha256:abc"}
+        \\{"status":"Status: Downloaded newer image for alpine:latest"}
+        \\
+    ;
+    try checkPullStreamErrors(std.testing.allocator, body);
+}
+
+test "checkPullStreamErrors: succeeds on empty stream" {
+    try checkPullStreamErrors(std.testing.allocator, "");
+}
+
+test "checkPullStreamErrors: skips non-JSON and malformed lines" {
+    const body = "not json\n   \n{malformed\n{\"status\":\"ok\"}\n";
+    try checkPullStreamErrors(std.testing.allocator, body);
+}
+
+test "checkPullStreamErrors: detects error in CRLF-terminated stream" {
+    const body = "{\"status\":\"Pulling\"}\r\n{\"error\":\"pull access denied\"}\r\n";
+    try std.testing.expectError(
+        DockerClientError.ImagePullFailed,
+        checkPullStreamErrors(std.testing.allocator, body),
+    );
 }

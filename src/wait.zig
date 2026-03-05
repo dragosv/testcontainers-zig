@@ -218,12 +218,15 @@ fn waitHttp(s: HttpStrategy, target: StrategyTarget, alloc: std.mem.Allocator) !
 
         const result = client.fetch(.{
             .location = .{ .url = url },
-            .method = if (std.mem.eql(u8, s.method, "POST")) .POST else .GET,
+            .method = if (std.mem.eql(u8, s.method, "POST")) .POST
+                      else if (std.mem.eql(u8, s.method, "HEAD")) .HEAD
+                      else if (std.mem.eql(u8, s.method, "PUT")) .PUT
+                      else if (std.mem.eql(u8, s.method, "DELETE")) .DELETE
+                      else .GET,
         }) catch {
             std.Thread.sleep(poll);
             continue;
         };
-        defer result.deinit(alloc);
 
         const code: u16 = @intFromEnum(result.status);
         const ok = if (s.status_code == 0)
