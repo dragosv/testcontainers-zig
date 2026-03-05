@@ -127,9 +127,9 @@ fn sendHttpRequest(
     content_type: ?[]const u8,
     body: ?[]const u8,
 ) !void {
-    var hdr_buf = std.ArrayList(u8).initCapacity(allocator, 0);
-    defer hdr_buf.deinit();
-    const w = hdr_buf.writer();
+    var hdr_buf = try std.ArrayList(u8).initCapacity(allocator, 0);
+    defer hdr_buf.deinit(allocator);
+    const w = hdr_buf.writer(allocator);
 
     try w.print("{s} {s} HTTP/1.1\r\n", .{ method.name(), path });
     try w.print("Host: localhost\r\n", .{});

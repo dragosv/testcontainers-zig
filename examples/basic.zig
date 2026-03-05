@@ -40,7 +40,6 @@ pub fn main() !void {
     const fetch_result = try http_client.fetch(.{
         .location = .{ .url = url },
     });
-    defer fetch_result.deinit(allocator);
 
     std.log.info("HTTP status: {d}", .{@intFromEnum(fetch_result.status)});
 
