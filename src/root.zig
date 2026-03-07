@@ -72,6 +72,14 @@ pub const DockerContainer = @import("docker_container.zig").DockerContainer;
 pub const DockerClient = @import("docker_client.zig").DockerClient;
 pub const docker_socket = @import("docker_client.zig").docker_socket;
 
+// Standard testcontainers label keys and metadata
+pub const label_base = @import("docker_client.zig").label_base;
+pub const label_lang = @import("docker_client.zig").label_lang;
+pub const label_version = @import("docker_client.zig").label_version;
+pub const label_session_id = @import("docker_client.zig").label_session_id;
+pub const tc_version = @import("docker_client.zig").tc_version;
+pub const getSessionId = @import("docker_client.zig").getSessionId;
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
