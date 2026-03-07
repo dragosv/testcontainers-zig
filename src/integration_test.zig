@@ -72,6 +72,23 @@ test "CustomLabelsImage" {
     const v2 = ctr_labels.object.get("test.label") orelse
         return error.LabelNotFound;
     try std.testing.expectEqualStrings("custom-value", v2.string);
+
+    // Verify standard testcontainers labels are always injected
+    const base = ctr_labels.object.get(tc.label_base) orelse
+        return error.LabelNotFound;
+    try std.testing.expectEqualStrings("true", base.string);
+
+    const lang = ctr_labels.object.get(tc.label_lang) orelse
+        return error.LabelNotFound;
+    try std.testing.expectEqualStrings("zig", lang.string);
+
+    const ver = ctr_labels.object.get(tc.label_version) orelse
+        return error.LabelNotFound;
+    try std.testing.expectEqualStrings(tc.tc_version, ver.string);
+
+    const sid = ctr_labels.object.get(tc.label_session_id) orelse
+        return error.LabelNotFound;
+    try std.testing.expectEqual(@as(usize, 36), sid.string.len);
 }
 
 // ---------------------------------------------------------------------------

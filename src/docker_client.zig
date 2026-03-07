@@ -13,6 +13,74 @@ pub const docker_socket = "/var/run/docker.sock";
 /// Docker Engine API version used for all requests.
 pub const api_version = "v1.46";
 
+// ---------------------------------------------------------------------------
+// Standard testcontainers labels (following the testcontainers specification)
+// ---------------------------------------------------------------------------
+
+/// Base label key — set to "true" on every managed container/network.
+pub const label_base = "org.testcontainers";
+/// Language identifier label key.
+pub const label_lang = "org.testcontainers.lang";
+/// Library version label key.
+pub const label_version = "org.testcontainers.version";
+/// Per-process session UUID label key, used for resource reaping.
+pub const label_session_id = "org.testcontainers.sessionId";
+
+/// Version of the testcontainers-zig library.
+pub const tc_version = "0.1.0";
+
+const HEX_CHARS = "0123456789abcdef";
+
+/// Format 16 random bytes as a UUID v4 string (36 characters).
+fn formatUuidV4(buf: *[36]u8, bytes: [16]u8) void {
+    const groups = [_]struct { start: usize, end: usize }{
+        .{ .start = 0, .end = 4 },
+        .{ .start = 4, .end = 6 },
+        .{ .start = 6, .end = 8 },
+        .{ .start = 8, .end = 10 },
+        .{ .start = 10, .end = 16 },
+    };
+    var pos: usize = 0;
+    inline for (groups, 0..) |g, gi| {
+        if (gi > 0) {
+            buf[pos] = '-';
+            pos += 1;
+        }
+        for (bytes[g.start..g.end]) |b| {
+            buf[pos] = HEX_CHARS[b >> 4];
+            buf[pos + 1] = HEX_CHARS[b & 0x0f];
+            pos += 2;
+        }
+    }
+}
+
+var session_id_buf: [36]u8 = undefined;
+var session_id_initialized: bool = false;
+
+/// Returns the per-process session ID as a UUID v4 string.
+/// The value is generated lazily on first call and cached.
+pub fn getSessionId() []const u8 {
+    if (!session_id_initialized) {
+        var bytes: [16]u8 = undefined;
+        std.crypto.random.bytes(&bytes);
+        // UUID v4: set version nibble to 4, variant bits to 10xx
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        formatUuidV4(&session_id_buf, bytes);
+        session_id_initialized = true;
+    }
+    return &session_id_buf;
+}
+
+/// Write the four standard testcontainers labels into a json.ObjectMap.
+/// User-supplied labels are written afterwards so they can override defaults.
+fn putDefaultLabels(obj: *std.json.ObjectMap) !void {
+    try obj.put(label_base, .{ .string = "true" });
+    try obj.put(label_lang, .{ .string = "zig" });
+    try obj.put(label_version, .{ .string = tc_version });
+    try obj.put(label_session_id, .{ .string = getSessionId() });
+}
+
 pub const DockerClientError = error{
     ApiError,
     NotFound,
@@ -854,9 +922,11 @@ fn buildCreateBody(allocator: std.mem.Allocator, req: *const container_mod.Conta
         try root.object.put("ExposedPorts", ports_obj);
     }
 
-    // Labels
-    if (req.labels.len > 0) {
+    // Labels — always inject the standard testcontainers labels, then
+    // layer user-supplied labels on top (user labels take precedence).
+    {
         var lbl_obj = std.json.Value{ .object = std.json.ObjectMap.init(a) };
+        try putDefaultLabels(&lbl_obj.object);
         for (req.labels) |kv| try lbl_obj.object.put(kv.key, .{ .string = kv.value });
         try root.object.put("Labels", lbl_obj);
     }
@@ -959,8 +1029,11 @@ fn buildNetworkCreateBody(
     try root.object.put("Driver", .{ .string = driver });
     try root.object.put("CheckDuplicate", .{ .bool = true });
 
-    if (labels.len > 0) {
+    // Labels — always inject the standard testcontainers labels, then
+    // layer user-supplied labels on top.
+    {
         var lbl_obj = std.json.Value{ .object = std.json.ObjectMap.init(a) };
+        try putDefaultLabels(&lbl_obj.object);
         for (labels) |kv| try lbl_obj.object.put(kv.key, .{ .string = kv.value });
         try root.object.put("Labels", lbl_obj);
     }
@@ -1321,4 +1394,91 @@ test "checkPullStreamErrors: detects error in CRLF-terminated stream" {
         DockerClientError.ImagePullFailed,
         checkPullStreamErrors(std.testing.allocator, body),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Label / session-ID tests
+// ---------------------------------------------------------------------------
+
+test "formatUuidV4: produces correct UUID v4 format" {
+    const bytes = [16]u8{ 0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00 };
+    var buf: [36]u8 = undefined;
+    formatUuidV4(&buf, bytes);
+    try std.testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", &buf);
+}
+
+test "formatUuidV4: all-zero bytes produce all-zero UUID" {
+    const bytes = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    var buf: [36]u8 = undefined;
+    formatUuidV4(&buf, bytes);
+    try std.testing.expectEqualStrings("00000000-0000-0000-0000-000000000000", &buf);
+}
+
+test "getSessionId: returns a 36-char UUID and is stable across calls" {
+    const id1 = getSessionId();
+    const id2 = getSessionId();
+    try std.testing.expectEqual(@as(usize, 36), id1.len);
+    try std.testing.expectEqualStrings(id1, id2);
+    // Check dashes at correct positions
+    try std.testing.expectEqual(@as(u8, '-'), id1[8]);
+    try std.testing.expectEqual(@as(u8, '-'), id1[13]);
+    try std.testing.expectEqual(@as(u8, '-'), id1[18]);
+    try std.testing.expectEqual(@as(u8, '-'), id1[23]);
+}
+
+test "buildCreateBody: injects standard testcontainers labels when no user labels" {
+    const req = container_mod.ContainerRequest{ .image = "alpine:3" };
+    const body = try buildCreateBody(std.testing.allocator, &req);
+    defer std.testing.allocator.free(body);
+    // Parse the generated JSON to verify labels
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    const labels = parsed.value.object.get("Labels").?.object;
+    try std.testing.expectEqualStrings("true", labels.get(label_base).?.string);
+    try std.testing.expectEqualStrings("zig", labels.get(label_lang).?.string);
+    try std.testing.expectEqualStrings(tc_version, labels.get(label_version).?.string);
+    try std.testing.expectEqual(@as(usize, 36), labels.get(label_session_id).?.string.len);
+}
+
+test "buildCreateBody: merges user labels with standard labels" {
+    const user_labels = [_]container_mod.KV{
+        .{ .key = "my.custom", .value = "hello" },
+    };
+    const req = container_mod.ContainerRequest{ .image = "alpine:3", .labels = &user_labels };
+    const body = try buildCreateBody(std.testing.allocator, &req);
+    defer std.testing.allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    const labels = parsed.value.object.get("Labels").?.object;
+    // Standard labels present
+    try std.testing.expectEqualStrings("true", labels.get(label_base).?.string);
+    try std.testing.expectEqualStrings("zig", labels.get(label_lang).?.string);
+    // User label present
+    try std.testing.expectEqualStrings("hello", labels.get("my.custom").?.string);
+}
+
+test "buildCreateBody: user labels override standard labels" {
+    const user_labels = [_]container_mod.KV{
+        .{ .key = label_base, .value = "custom-override" },
+    };
+    const req = container_mod.ContainerRequest{ .image = "alpine:3", .labels = &user_labels };
+    const body = try buildCreateBody(std.testing.allocator, &req);
+    defer std.testing.allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    const labels = parsed.value.object.get("Labels").?.object;
+    // User override wins
+    try std.testing.expectEqualStrings("custom-override", labels.get(label_base).?.string);
+}
+
+test "buildNetworkCreateBody: injects standard testcontainers labels" {
+    const body = try buildNetworkCreateBody(std.testing.allocator, "test-net", "bridge", &.{});
+    defer std.testing.allocator.free(body);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    const labels = parsed.value.object.get("Labels").?.object;
+    try std.testing.expectEqualStrings("true", labels.get(label_base).?.string);
+    try std.testing.expectEqualStrings("zig", labels.get(label_lang).?.string);
+    try std.testing.expectEqualStrings(tc_version, labels.get(label_version).?.string);
+    try std.testing.expectEqual(@as(usize, 36), labels.get(label_session_id).?.string.len);
 }
