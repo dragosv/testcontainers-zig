@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        platform: [ubuntu-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build all
+        run: zig build
+
+      - name: Run unit tests
+        run: zig build test --summary all
+
+      - name: Run integration tests
+        run: zig build integration-test --summary all
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches build.zig.zon version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          ZON_VERSION=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
+          if [ "$TAG" != "$ZON_VERSION" ]; then
+            echo "::error::Tag v$TAG does not match build.zig.zon version $ZON_VERSION"
+            exit 1
+          fi
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "body=Initial release." >> "$GITHUB_OUTPUT"
+          else
+            NOTES=$(git log --pretty=format:"- %s (%h)" "$PREVIOUS_TAG"..HEAD)
+            {
+              echo "body<<EOF"
+              echo "$NOTES"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
