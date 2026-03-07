@@ -16,7 +16,7 @@ This document provides a comprehensive overview of the testcontainers-zig implem
    - Zig Build System configuration
    - Minimum Zig version: 0.15.2
    - Build steps: `build`, `test`, `integration-test`, `example`
-   - Single external dependency: `dusty` (HTTP client, unix socket transport)
+   - No external dependencies — built-in HTTP/1.1 client over Unix domain socket (`std.net.connectUnixSocket`)
 
 2. **Docker API Client** (`src/docker_client.zig`)
    - Value-type `DockerClient` communicating over a Unix socket
@@ -149,23 +149,18 @@ errdefer alloc.free(some_resource);
 Every function that allocates takes an `std.mem.Allocator` parameter and documents ownership
 of returned slices. No global allocator, no GC.
 
-### 5. zio Runtime Requirement
+### 5. No External Runtime Required
 
-All network I/O is backed by zio (async runtime). Callers must keep a `zio.Runtime` alive:
-
-```zig
-var rt = try zio.Runtime.init(alloc, .{});
-defer rt.deinit();
-```
+All network I/O uses the built-in HTTP/1.1 client over `std.net.connectUnixSocket`.
+No external runtime initialisation is needed before using the library.
 
 ## Dependencies
 
 | Package | Role |
 |---------|------|
-| `dusty` | HTTP over Unix socket (Docker API transport) |
-| Zig stdlib | JSON, I/O, testing, memory |
+| Zig stdlib | JSON, I/O, HTTP, networking, testing, memory |
 
-zio is a transitive dependency of dusty; application code does not import it directly.
+No external dependencies. The library uses a built-in HTTP/1.1 client over Unix domain socket.
 
 ## Feature Comparison with testcontainers-go
 
@@ -234,7 +229,7 @@ testcontainers-zig/
 - **Supported Modules**: 10 (Postgres, MySQL, Redis, MongoDB, RabbitMQ, MariaDB, MinIO, Elasticsearch, Kafka, LocalStack)
 - **Wait Strategies**: 7 built-in
 - **Integration Tests**: 24
-- **External Dependencies**: 1 (`dusty`)
+- **External Dependencies**: 0
 - **Zig Version**: 0.15.2
 
 ## Testing Coverage

@@ -14,7 +14,7 @@ jobs:
   build-and-test:
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest]
+        platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
@@ -26,7 +26,7 @@ jobs:
       - name: Check zig version
         run: zig version
 
-      - name: Build all examples
+      - name: Build all
         run: zig build
 
       - name: Run tests

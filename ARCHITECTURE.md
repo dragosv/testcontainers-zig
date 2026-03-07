@@ -11,7 +11,7 @@ For usage examples and getting-started instructions see [QUICKSTART.md](QUICKSTA
 | Zig-first | Tagged unions, comptime, `errdefer`, manual allocation — no hidden allocations |
 | Type safety | Comptime-checked configuration; all errors are explicit in return types |
 | Developer experience | Simple struct-literal configuration, namespace-based wait strategy DSL |
-| Minimal coupling | Single library; HTTP transport is a separate `dusty` dependency |
+| Minimal coupling | Single library; no external dependencies — built-in HTTP/1.1 client over Unix domain socket |
 | Testability | `DockerClient` is injected via value; containers clean up deterministically |
 
 ## Component Overview
@@ -31,7 +31,7 @@ testcontainers (src/root.zig)
         mariadb, minio, elasticsearch, kafka, localstack
 ```
 
-The HTTP transport layer is provided by **dusty** (a dependency declared in `build.zig.zon`). The async I/O runtime is **zio**. Neither is re-exported by `testcontainers`; callers only need to initialise `zio.Runtime` once before making any calls.
+The HTTP transport layer is a built-in HTTP/1.1 client that communicates directly with the Docker Unix socket via `std.net.connectUnixSocket`. There are no external dependencies. For the HTTP wait strategy, `std.http.Client` from the standard library is used.
 
 ## Component Diagram
 
@@ -61,8 +61,8 @@ The HTTP transport layer is provided by **dusty** (a dependency declared in `bui
 └────────────────────────────────────────────┼────────────────────┘
                                              ▼
                               ┌──────────────────────────────┐
-                              │  dusty HTTP client           │
-                              │  (unix socket transport)     │
+                              │  Built-in HTTP/1.1 client    │
+                              │  (std.net.connectUnixSocket) │
                               └──────────────────────────────┘
                                              │
                                              ▼
@@ -164,14 +164,8 @@ There are no finalizers, no reference counting, and no garbage collector.
 
 ## Concurrency Model
 
-The library uses **dusty** for HTTP over a Unix socket. dusty is internally powered by **zio**,
-a structured async I/O runtime. Callers must initialise a `zio.Runtime` before making any
-network calls:
-
-```zig
-var rt = try zio.Runtime.init(alloc, .{});
-defer rt.deinit();
-```
+The library uses a built-in HTTP/1.1 client that communicates directly with the Docker Unix
+socket via `std.net.connectUnixSocket`. No external runtime or async framework is needed.
 
 All public API functions block the calling thread until completion. There is no callback or
 Future-based API surface.
@@ -204,15 +198,14 @@ aliases from `ContainerRequest.network_aliases`.
 
 | Dependency | Role | Source |
 |-----------|------|--------|
-| `dusty` | HTTP client (unix socket + TCP) | `build.zig.zon` |
-| Zig stdlib | JSON, I/O, testing | built-in |
+| Zig stdlib | JSON, I/O, HTTP, networking, testing | built-in |
 
-No other runtime dependencies. zio is a transitive dependency of dusty and is not referenced
-directly by application code.
+No external dependencies. The library communicates with the Docker Engine using a built-in
+HTTP/1.1 client over `std.net.connectUnixSocket`.
 
 ## References
 
 - [Docker Engine API v1.44](https://docs.docker.com/engine/api/v1.44/)
 - [Zig Language Reference](https://ziglang.org/documentation/0.15.2/)
 - [testcontainers-go](https://github.com/testcontainers/testcontainers-go) — reference architecture
-- [dusty HTTP client](https://github.com/dragosv/dusty) — transport layer
+- [Zig Standard Library](https://ziglang.org/documentation/0.15.2/std/) — HTTP, networking, JSON

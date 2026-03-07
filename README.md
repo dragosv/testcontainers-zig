@@ -40,17 +40,12 @@ See [QUICKSTART.md](QUICKSTART.md) for a step-by-step guide.
 
 ```zig
 const std = @import("std");
-const zio = @import("zio");
 const tc  = @import("testcontainers");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-
-    // zio runtime must live for the duration of all network I/O
-    var rt = try zio.Runtime.init(alloc, .{});
-    defer rt.deinit();
 
     const ctr = try tc.run(alloc, "nginx:latest", .{
         .exposed_ports = &.{"80/tcp"},

@@ -25,30 +25,18 @@ Wire it up in `build.zig`:
 ```zig
 const tc_dep = b.dependency("testcontainers", .{ .target = target, .optimize = optimize });
 exe.root_module.addImport("testcontainers", tc_dep.module("testcontainers"));
-// also expose zio so the runtime is accessible
-const zio_dep = tc_dep.builder.dependency("dusty", .{}).builder
-    .dependency("zio", .{});
-exe.root_module.addImport("zio", zio_dep.module("zio"));
 ```
 
 ## Basic Example
 
-Every program that uses testcontainers must initialise the **zio** async runtime before
-making any network calls:
-
 ```zig
 const std = @import("std");
-const zio = @import("zio");
 const tc  = @import("testcontainers");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
-
-    // REQUIRED: zio runtime must be alive for the duration of all I/O.
-    var rt = try zio.Runtime.init(alloc, .{});
-    defer rt.deinit();
 
     // Start a PostgreSQL container using the built-in module.
     var provider = try tc.DockerProvider.init(alloc);

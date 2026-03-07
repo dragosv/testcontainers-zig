@@ -6,18 +6,12 @@
 /// Run with:
 ///   zig build example
 const std = @import("std");
-const zio = @import("zio");
 const tc = @import("testcontainers");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-
-    // IMPORTANT: initialise the zio runtime before making any network calls.
-    // dusty (the HTTP library) is async-behind-the-scenes via zio.
-    var rt = try zio.Runtime.init(allocator, .{});
-    defer rt.deinit();
 
     std.log.info("Starting nginx container...", .{});
 
@@ -36,27 +30,18 @@ pub fn main() !void {
     const port = try ctr.mappedPort("80/tcp", allocator);
     std.log.info("nginx is ready on localhost:{d}", .{port});
 
-    // Fetch the nginx welcome page using a dusty client
-    var client = tc.DockerClient.init(allocator, tc.docker_socket);
-    defer client.deinit();
-
-    // Use a plain dusty client to hit the mapped port over TCP
-    const dusty = @import("dusty");
-    var http_client = dusty.Client.init(allocator, .{});
-    defer http_client.deinit();
-
+    // Verify the nginx page is reachable using std.http.Client
     const url = try std.fmt.allocPrint(allocator, "http://localhost:{d}/", .{port});
     defer allocator.free(url);
 
-    var resp = try http_client.fetch(url, .{});
-    defer resp.deinit();
+    var http_client: std.http.Client = .{ .allocator = allocator };
+    defer http_client.deinit();
 
-    std.log.info("HTTP status: {d}", .{@intFromEnum(resp.status())});
+    const fetch_result = try http_client.fetch(.{
+        .location = .{ .url = url },
+    });
 
-    if (try resp.body()) |body| {
-        const preview_len = @min(body.len, 200);
-        std.log.info("Body preview:\n{s}", .{body[0..preview_len]});
-    }
+    std.log.info("HTTP status: {d}", .{@intFromEnum(fetch_result.status)});
 
     // Demonstrate exec
     const result = try ctr.exec(&.{ "echo", "hello from container" });

@@ -8,20 +8,11 @@
 ///
 /// Tests are automatically skipped when Docker is not reachable.
 const std = @import("std");
-const zio = @import("zio");
 const tc = @import("testcontainers");
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Initialise a zio runtime and skip the enclosing test if Docker is not
-/// reachable.  The runtime is stored in the caller's local variable.
-/// Uses std.heap.c_allocator for the runtime to avoid GPA teardown conflicts.
-fn initRuntimeOrSkip(_: std.mem.Allocator) !*zio.Runtime {
-    const rt = try zio.Runtime.init(std.heap.c_allocator, .{});
-    return rt;
-}
 
 /// Skip the test if Docker is not responding on the default socket.
 fn skipIfNoDocker(alloc: std.mem.Allocator) !void {
@@ -44,8 +35,6 @@ fn uniqueName(alloc: std.mem.Allocator, prefix: []const u8) ![]const u8 {
 
 test "CustomLabelsImage" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -92,8 +81,6 @@ test "CustomLabelsImage" {
 
 test "GetLogsFromFailedContainer" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -134,8 +121,6 @@ test "GetLogsFromFailedContainer" {
 
 test "ContainerInspectState" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -167,8 +152,6 @@ test "ContainerInspectState" {
 
 test "ContainerExec" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -200,8 +183,6 @@ test "ContainerExec" {
 
 test "ContainerExecNonZeroExit" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -230,8 +211,6 @@ test "ContainerExecNonZeroExit" {
 
 test "ContainerCopyToContainer" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -265,8 +244,6 @@ test "ContainerCopyToContainer" {
 
 test "WaitForLogStrategy" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -294,8 +271,6 @@ test "WaitForLogStrategy" {
 
 test "WaitForPortStrategy" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -324,8 +299,6 @@ test "WaitForPortStrategy" {
 
 test "WaitForHTTPStrategy" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -360,8 +333,6 @@ test "WaitForHTTPStrategy" {
 
 test "ContainerMappedPort" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -390,8 +361,6 @@ test "ContainerMappedPort" {
 
 test "ShouldStartMultipleContainers" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -431,8 +400,6 @@ test "ShouldStartMultipleContainers" {
 
 test "GenericContainerShouldReturnRefOnError" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -472,8 +439,6 @@ test "GenericContainerShouldReturnRefOnError" {
 
 test "ImageExists" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var client = tc.DockerClient.init(alloc, tc.docker_socket);
@@ -495,8 +460,6 @@ test "ImageExists" {
 
 test "ContainerStopAndRestart" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -528,8 +491,6 @@ test "ContainerStopAndRestart" {
 
 test "GenericReusableContainer" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     // Generate a unique container name for this test run.
@@ -599,8 +560,6 @@ test "GenericReusableContainer" {
 
 test "GenericReusableContainerRequiresName" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -624,8 +583,6 @@ test "GenericReusableContainerRequiresName" {
 
 test "network: New" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -655,8 +612,6 @@ test "network: New" {
 
 test "network: ContainerAttachedToNewNetwork" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -733,8 +688,6 @@ test "network: ContainerAttachedToNewNetwork" {
 
 test "network: MultipleContainersInSameNetwork" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -806,8 +759,6 @@ test "network: MultipleContainersInSameNetwork" {
 
 test "network: ContainerIPs" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -858,8 +809,6 @@ test "network: ContainerIPs" {
 
 test "WaitForExecStrategy" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -894,8 +843,6 @@ test "WaitForExecStrategy" {
 
 test "ContainerWithEnvironmentVariables" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -927,8 +874,6 @@ test "ContainerWithEnvironmentVariables" {
 
 test "ContainerEndpoint" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     var provider = tc.DockerProvider.init(alloc);
@@ -960,8 +905,6 @@ test "ContainerEndpoint" {
 
 test "TopLevelRunFunction" {
     const alloc = std.testing.allocator;
-    const rt = try initRuntimeOrSkip(alloc);
-    defer rt.deinit();
     try skipIfNoDocker(alloc);
 
     defer tc.deinitProvider();
